@@ -250,21 +250,44 @@ async function prefetch(req: QuoteRequest): Promise<void> {
 async function showFullPage(d: Drawing, item: Item | null = null): Promise<void> {
   const req = currentRequest();
   const box = openModal(
-    `<div class="mhead"><h3>${esc(d.filename)}</h3>
-      ${item && req ? `
-      <div id="md-price">
-        <label>Teklif Ver:</label>
-        <input type="text" id="pdf-price" inputmode="decimal" placeholder="0,00" value="${esc(priceText(req, item))}">
-      </div>` : ""}
-      <button class="btn sm" id="zo">−</button><button class="btn sm" id="zf">Sığdır</button><button class="btn sm" id="zi">+</button>
-      <button class="btn sm" id="zc">Kapat</button></div>
-     <div class="pageview" id="pv"><p class="mu" style="color:#fff;padding:20px">Çizim hazırlanıyor…</p></div>`,
+    `<div class="mhead" style="justify-content: space-between;">
+        <h3 style="margin:0">${esc(d.filename)}</h3>
+        <div style="display:flex; align-items:center; gap: 16px;">
+          ${item && req ? `
+          <div id="md-price">
+            <label>Teklif Ver:</label>
+            <input type="text" id="pdf-price" inputmode="decimal" placeholder="0,00" value="${esc(priceText(req, item))}">
+            <span id="pdf-tot" style="color:#fff; font-weight:600; font-size:15px; margin-left:8px; min-width:80px; text-align:right">${totalText(req, item)}</span>
+          </div>` : ""}
+          <button class="btn sm" id="zc">Kapat</button>
+        </div>
+      </div>
+      <div class="pageview" id="pv" style="position:relative; overflow:hidden; touch-action:none; cursor:grab;">
+         <p class="mu" style="color:#fff;padding:20px">Çizim hazırlanıyor…</p>
+      </div>
+      <div class="zoom-bar">
+        <button class="btn icon" id="zo" title="Uzaklaştır">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6M7 10h6" stroke="currentColor" style="display:none"/><path d="M7 10h6"/></svg>
+        </button>
+        <button class="btn icon" id="zf" style="font-size:13px; font-weight:600; padding:0 8px">SIĞDIR</button>
+        <button class="btn icon" id="zi" title="Yakınlaştır">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6M7 10h6"/></svg>
+        </button>
+      </div>`,
     true,
   );
   $("zc").onclick = closeModal;
   if (item && req) {
     const pInput = $<HTMLInputElement>("pdf-price");
     if (pInput) {
+      pInput.oninput = () => {
+        const p = parsePrice(pInput.value);
+        const tot = $("pdf-tot");
+        if (tot) {
+          if (p != null && p > 0) tot.textContent = formatMoney(p * (item.qty || 1)) + " TL";
+          else tot.textContent = "—";
+        }
+      };
       pInput.onkeydown = (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -282,22 +305,75 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
     const page = await renderFullPage(d);
     if (!box.isConnected || $("pv") == null) return;
     const pv = $("pv");
-    pv.innerHTML = `<img id="pimg" src="${page.url}" alt="">`;
+    pv.innerHTML = `<img id="pimg" src="${page.url}" alt="" style="position:absolute; transform-origin: top left; pointer-events:none;">`;
     const img = $<HTMLImageElement>("pimg");
     let zoom = 1; // 1 = sığdır
+    let offsetX = 0;
+    let offsetY = 0;
+    let isDragging = false;
+    let startX = 0, startY = 0;
+
     const apply = () => {
       const fit = Math.min(pv.clientWidth / page.width, pv.clientHeight / page.height);
-      img.style.width = `${page.width * fit * zoom}px`;
+      const w = page.width * fit * zoom;
+      const h = page.height * fit * zoom;
+      
+      const maxX = Math.max(0, w - pv.clientWidth);
+      const maxY = Math.max(0, h - pv.clientHeight);
+      
+      if (w <= pv.clientWidth) offsetX = (pv.clientWidth - w) / 2;
+      else offsetX = Math.max(-maxX, Math.min(0, offsetX));
+      
+      if (h <= pv.clientHeight) offsetY = (pv.clientHeight - h) / 2;
+      else offsetY = Math.max(-maxY, Math.min(0, offsetY));
+
+      img.style.width = `${page.width * fit}px`;
+      img.style.height = `${page.height * fit}px`;
+      img.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${zoom})`;
     };
-    apply();
+    
+    setTimeout(apply, 10);
+    const ro = new ResizeObserver(apply);
+    ro.observe(pv);
+
     $("zi").onclick = () => { zoom = Math.min(zoom * 1.5, 8); apply(); };
     $("zo").onclick = () => { zoom = Math.max(zoom / 1.5, 0.5); apply(); };
     $("zf").onclick = () => { zoom = 1; apply(); };
+    
     pv.onwheel = (e) => {
-      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
+      const oldZoom = zoom;
       zoom = Math.min(8, Math.max(0.5, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      
+      const rect = pv.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      
+      offsetX = mouseX - (mouseX - offsetX) * (zoom / oldZoom);
+      offsetY = mouseY - (mouseY - offsetY) * (zoom / oldZoom);
+      
       apply();
+    };
+    
+    pv.onmousedown = (e) => {
+      isDragging = true;
+      startX = e.clientX - offsetX;
+      startY = e.clientY - offsetY;
+      pv.style.cursor = "grabbing";
+    };
+    pv.onmousemove = (e) => {
+      if (!isDragging) return;
+      offsetX = e.clientX - startX;
+      offsetY = e.clientY - startY;
+      apply();
+    };
+    pv.onmouseup = () => {
+      isDragging = false;
+      pv.style.cursor = "grab";
+    };
+    pv.onmouseleave = () => {
+      isDragging = false;
+      pv.style.cursor = "grab";
     };
   } catch (e) {
     const pv = $("pv");
@@ -345,6 +421,7 @@ function renderSidebar(): void {
           const bits = [parts, `${ready}/${r.items.length} çizim`];
           if (r.deadline) bits.push(`son tarih ${r.deadline.replace(/\.\d{4}/, "")}`);
           html += `<div class="req ${r.id === state.selectedRequest ? "on" : ""}" data-req="${esc(r.id)}">
+            <button class="btn-rm" data-rmreq="${esc(r.id)}" title="Gizle/Sil">×</button>
             <b>${esc(requestTitle(r))}</b><small>${esc(bits.join(" · "))}</small>
             ${offer ? `<small class="ok">Teklif hazırlandı ✓</small>
               <select class="res" data-res="${esc(r.id)}">
@@ -368,6 +445,13 @@ function renderSidebar(): void {
 
 function onSidebarClick(e: MouseEvent): void {
   const t = e.target as HTMLElement;
+  const rm = t.closest<HTMLElement>("[data-rmreq]");
+  if (rm) {
+    e.stopPropagation();
+    const req = state.requests.find((r) => r.id === rm.dataset.rmreq);
+    if (req && confirm("Bu isteği listeden kaldırmak istediğinize emin misiniz?")) removeRequest(req);
+    return;
+  }
   const firmTitle = t.closest(".firm-title");
   if (firmTitle) {
       const reqsDiv = firmTitle.nextElementSibling as HTMLElement;
@@ -452,6 +536,10 @@ function renderMid(): void {
   }).join("");
 
   const notes: string[] = [];
+  const offer = state.offers[req.id];
+  if (offer && offer.result === "won") {
+    notes.push(`<div class="won-banner">✅ <b>SİPARİŞ ONAYLANDI:</b> Bu teklif kazanıldı ve işleme girmelidir.</div>`);
+  }
   const waiting = req.items.filter((i) => i.status === "waiting").length;
   const missing = req.items.filter((i) => i.status === "missing").length;
   if (req.partTotal && req.partsReceived.length && req.partsReceived.length < req.partTotal) {

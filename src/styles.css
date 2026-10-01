@@ -83,3 +83,14 @@ footer .sp{flex:1}
 .row2 input[type=text]{flex:1}
 #drop{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(26,95,180,.15);border:3px dashed var(--ac);font-size:18px;color:var(--ac);z-index:30;pointer-events:none}
 #toast{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);background:var(--tx);color:var(--pn);padding:8px 14px;border-radius:6px;font-size:13px;display:none;z-index:40;max-width:80%}
+.req { position: relative; }
+.btn-rm { position: absolute; top: 8px; right: 8px; background: transparent; border: none; color: var(--mu); font-size: 16px; cursor: pointer; display: none; line-height: 1; padding: 0 4px; border-radius: 4px; }
+.req:hover .btn-rm { display: block; }
+.btn-rm:hover { color: var(--er); background: rgba(192, 57, 43, 0.1); }
+.won-banner { background: rgba(31, 138, 76, 0.1); border: 1px solid var(--ok); color: var(--ok); padding: 12px 16px; border-radius: 8px; font-size: 14px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+.zoom-bar { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; background: rgba(30, 30, 30, 0.7); padding: 8px 16px; border-radius: 30px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 50; align-items: center; }
+.zoom-bar .btn.icon { background: transparent; color: #fff; border: none; font-weight: 500; cursor: pointer; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; justify-content: center; }
+.zoom-bar .btn.icon:hover { background: rgba(255,255,255,0.2); }
+#md-price { display: flex; align-items: center; background: rgba(255, 255, 255, 0.1); padding: 4px 8px; border-radius: 6px; }
+#md-price label { color: #fff; font-size: 12px; margin-right: 8px; margin-bottom: 0; }
+#md-price input { background: #fff; color: #000; border: none; width: 100px; padding: 6px 8px; border-radius: 4px; font-weight: 600; text-align: right; }
