@@ -1,0 +1,49 @@
+[package]
+name = "bahatek-teklif"
+version = "0.1.0"
+description = "Bahatek Teklif – teklif hazırlama masaüstü uygulaması"
+authors = ["Bahatek Software"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "bahatek_teklif_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+rust_xlsxwriter = "0.99.1"
+base64 = "0.23.1"
+sha2 = "0.11.0"
+rand = "0.8"
+url = "2.5.8"
+tokio = { version = "1.53.1", features = ["net", "io-util", "time"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "query", "native-tls", "http2", "charset"] }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-autostart = "2"
+
+[dev-dependencies]
+calamine = "0.36.1"

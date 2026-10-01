@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bahatek Teklif – Prototip</title>
+<style>
+:root{--bg:#f4f5f7;--pn:#fff;--tx:#1b1f24;--mu:#6a7380;--bd:#dde1e6;--ac:#1a5fb4;--ok:#1f8a4c;--hl:#eaf2fd;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#15181c;--pn:#1d2126;--tx:#e8eaed;--mu:#9aa3ad;--bd:#2f353c;--ac:#6ea8fe;--ok:#4cc38a;--hl:#1e2b3d}}
+:root[data-theme="dark"]{--bg:#15181c;--pn:#1d2126;--tx:#e8eaed;--mu:#9aa3ad;--bd:#2f353c;--ac:#6ea8fe;--ok:#4cc38a;--hl:#1e2b3d}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column}
+header{padding:10px 16px;background:var(--pn);border-bottom:1px solid var(--bd);display:flex;gap:12px;align-items:center}
+header b{font-size:15px}header span{color:var(--mu);font-size:12px}
+main{flex:1;display:grid;grid-template-columns:230px minmax(0,1fr) 340px;min-height:0}
+.col{background:var(--pn);border-right:1px solid var(--bd);overflow:auto;min-height:0}
+.mid{background:var(--bg);padding:12px;overflow:auto}
+.side h4{margin:14px 12px 6px;font-size:11px;text-transform:uppercase;color:var(--mu);letter-spacing:.05em}
+.req{padding:8px 12px;border-left:3px solid transparent;cursor:pointer}
+.req.on{background:var(--hl);border-color:var(--ac)}
+.req small{display:block;color:var(--mu)}
+.btn{border:1px solid var(--bd);background:var(--pn);color:var(--tx);padding:7px 12px;border-radius:6px;cursor:pointer;font:inherit}
+.btn.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+.side .btn{margin:8px 12px;width:calc(100% - 24px);display:block}
+.tw{overflow-x:auto;border:1px solid var(--bd);border-radius:8px;background:var(--pn)}
+table{border-collapse:collapse;width:100%;min-width:760px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+th{position:sticky;top:0;background:var(--pn);font-size:12px}
+th.n,td.n{text-align:right}
+th.new{background:var(--hl)}
+tr.row{cursor:pointer}tr.row:hover td{background:var(--hl)}tr.sel td{background:var(--hl)}
+td.code{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+td input{width:90px;text-align:right;padding:4px 6px;border:1px solid var(--bd);border-radius:4px;background:var(--bg);color:var(--tx);font:inherit}
+.tot{font-weight:600}
+.right{padding:12px}
+.right h3{margin:0 0 4px;font-size:14px}
+.right img{width:100%;border:1px solid var(--bd);border-radius:6px;background:#fff}
+.pr{display:flex;gap:6px;margin-top:10px}.pr input{flex:1;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--tx);font:inherit}
+.mu{color:var(--mu);font-size:12px}
+footer{padding:10px 16px;background:var(--pn);border-top:1px solid var(--bd);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+footer .sp{flex:1}
+#tip{position:fixed;display:none;z-index:9;width:280px;background:var(--pn);border:1px solid var(--bd);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.25);padding:6px;pointer-events:none}
+#tip img{width:100%;border-radius:4px;display:block;background:#fff}
+#tip div{font-size:11px;color:var(--mu);padding:4px 2px 0}
+#md{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:20;padding:16px}
+#md .box{background:var(--pn);border-radius:10px;max-width:900px;width:100%;max-height:90%;overflow:auto;padding:16px}
+.xl th,.xl td{border:1px solid var(--bd);font-size:12px;padding:4px 8px}
+.xl th{background:#1f7a45;color:#fff;position:static}
+.ok{color:var(--ok)}
+@media(max-width:900px){main{grid-template-columns:1fr;overflow:auto}.right{border-top:1px solid var(--bd)}}
+</style></head><body>
+<header><b>Bahatek Teklif</b><span>Prototip · örnek veriler · çizimler geçici görsel</span></header>
+<main>
+<aside class="col side">
+<h4>B Firması</h4>
+<div class="req on"><b>Teklif İsteği (16:00 26.09.2026)</b><small>Parça 1–3 birleşti · son tarih 28.09 15:00</small></div>
+<div class="req"><b>Teklif İsteği (10:00 22.09.2026)</b><small>Gönderildi</small></div>
+<h4>C Firması</h4>
+<div class="req"><small>Teklif isteği yok</small></div>
+<button class="btn" id="gm">Gmail'i Aç</button>
+<div class="mu" style="padding:6px 12px">Arşiv: Teklif Arşivi / B Firması /</div>
+</aside>
+<section class="mid">
+<div class="tw"><table><thead><tr><th>Malzeme</th><th>Malzeme Tanımı</th><th class="n">Miktar</th><th>Ö/B</th><th>Teslim Tarihi</th><th class="n new">Birim Fiyat</th><th class="n new">Toplam</th></tr></thead><tbody id="tb"></tbody></table></div>
+<p class="mu">Satırın üzerine gelince çizim önizlemesi açılır, tıklayınca sağda büyür.</p>
+</section>
+<aside class="col right" id="rp" style="border-right:0;border-left:1px solid var(--bd)"><p class="mu">Bir satır seçin.</p></aside>
+</main>
+<footer>
+<span>Fiyatlanan: <b id="cnt">0</b> / <span id="all"></span></span>
+<span>Genel toplam: <b id="gt">0,00</b></span><span class="sp"></span>
+<label class="mu"><input type="checkbox" id="full"> Tam liste (boş satırlar da gitsin)</label>
+<button class="btn p" id="prep">Teklifi Hazırla</button>
+</footer>
+<div id="tip"><img id="ti"><div>Örnek çizim · gerçek PDF burada açılacak</div></div>
+<div id="md"><div class="box" id="mb"></div></div>
+<script>
+const D=`FU00097803/B-03|TIA MIKNATIS PULU-U00097803/B-MF|1|09.10.2026
+FU00137308/A-03|TIA BAGA IMALI-U00137308/A-MF|2|08.10.2026
+FU00137539/A-03|TIA CATAL_BAGL_YAN IMALI-U00137539/A-MF|2|08.10.2026
+FU00174995/A-03|TIA YAN KLAVUZ-U00174995/A-MF|2|08.10.2026
+FU00228289/A-03|TIA MIL TUTUCU-U00228289/A-MF|20|02.10.2026
+FU00230931-A-03|TIA TABAN MIL TUTUCU-U00230931/A-MF|20|02.10.2026
+FU00289363/B-03|TIA DAYAMA TAKOZU -U00289363/B-MF|1|08.10.2026
+FU00292984/A-03|TIA T YATAK -U00292984/A-MF|2|08.10.2026
+FU00293355/A-03|TIA-1 LAMA-I -U00293355/A-EM|1|09.10.2026
+FU00293395/B-03|TIA-1 LAMA-IV -U00293395/B-MF|1|09.10.2026
+FU00293572/C-03|TIA-1 LAMA-I -U00293572/C-MF|1|09.10.2026
+FU00293621/A-03|TIA-1 LAMA-XXII -U00293621/A-EM|1|09.10.2026
+FU00295590/A-03|TIA-1 ARA LAMA -U00295590/A-MF|1|09.10.2026
+FU00314268/B-03|TIA KAPAK -U00314268/B-MF|1|08.10.2026
+FU00319215/A-03|TIA-1 YAN PLAKA 1 -U00319215/A-MF|1|08.10.2026
+FU00319233/A-03|TIA UC KILAVUZ -U00319233/A-MF|4|08.10.2026`.split("\n").map(l=>{const a=l.split("|");return{c:a[0],t:a[1],q:+a[2],d:a[4]||a[3],p:""}});
+const $=id=>document.getElementById(id);
+const fmt=n=>n.toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+const num=v=>parseFloat(String(v).replace(/\./g,"").replace(",","."))||0;
+function img(r,i){const s=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 280"><rect width="400" height="280" fill="#fff"/><g fill="none" stroke="#1a5fb4" stroke-width="2"><rect x="60" y="60" width="${140+(i%4)*30}" height="${90+(i%3)*25}"/><circle cx="290" cy="130" r="${30+(i%3)*10}"/><circle cx="290" cy="130" r="10"/><path d="M60 210H360M60 200v20M360 200v20" stroke="#888"/></g><g font-family="monospace" font-size="12" fill="#333"><text x="14" y="22">${r.c}</text><text x="14" y="40">${r.t.slice(0,44)}</text><text x="14" y="268" fill="#999">ÖRNEK ÇİZİM – ${r.q} AD</text></g></svg>`;return"data:image/svg+xml;utf8,"+encodeURIComponent(s)}
+let sel=-1;
+function render(){$("tb").innerHTML=D.map((r,i)=>`<tr class="row ${i==sel?"sel":""}" data-i="${i}"><td class="code">${r.c}</td><td>${r.t}</td><td class="n">${r.q}</td><td>AD</td><td>${r.d}</td><td class="n"><input data-i="${i}" value="${r.p}" inputmode="decimal" placeholder="—"></td><td class="n tot" id="t${i}">${r.p?fmt(num(r.p)*r.q):""}</td></tr>`).join("");$("all").textContent=D.length;sum()}
+function sum(){let g=0,c=0;D.forEach(r=>{if(num(r.p)>0){c++;g+=num(r.p)*r.q}});$("cnt").textContent=c;$("gt").textContent=fmt(g)}
+function open_(i){sel=i;const r=D[i];$("rp").innerHTML=`<h3>${r.c}</h3><div class="mu">${r.t}</div><img src="${img(r,i)}" style="margin-top:8px"><div class="mu">Miktar: ${r.q} AD · İstenen teslim: ${r.d}</div><div class="pr"><input id="pi" placeholder="Birim fiyat" value="${r.p}" inputmode="decimal"><button class="btn p" id="pa">Uygula</button></div><div class="mu" style="margin-top:6px">Enter: uygula ve sonraki kaleme geç</div>`;
+document.querySelectorAll("tr.row").forEach(x=>x.classList.toggle("sel",+x.dataset.i==i));
+const ap=()=>{r.p=$("pi").value;const t=$("t"+i);t.textContent=r.p?fmt(num(r.p)*r.q):"";document.querySelector(`input[data-i="${i}"]`).value=r.p;sum();if(i<D.length-1)open_(i+1)};
+$("pa").onclick=ap;$("pi").onkeydown=e=>{if(e.key=="Enter")ap()};$("pi").focus()}
+$("tb").addEventListener("click",e=>{if(e.target.tagName=="INPUT")return;const tr=e.target.closest("tr");if(tr)open_(+tr.dataset.i)});
+$("tb").addEventListener("input",e=>{if(e.target.tagName!="INPUT")return;const i=+e.target.dataset.i;D[i].p=e.target.value;$("t"+i).textContent=D[i].p?fmt(num(D[i].p)*D[i].q):"";sum()});
+const tip=$("tip");
+$("tb").addEventListener("mousemove",e=>{const tr=e.target.closest("tr");if(!tr||e.target.tagName=="INPUT"){tip.style.display="none";return}const i=+tr.dataset.i;$("ti").src=img(D[i],i);tip.style.display="block";tip.style.left=Math.min(e.clientX+16,innerWidth-300)+"px";tip.style.top=Math.min(e.clientY+12,innerHeight-230)+"px"});
+$("tb").addEventListener("mouseleave",()=>tip.style.display="none");
+$("prep").onclick=()=>{const full=$("full").checked;const rows=D.filter(r=>full||num(r.p)>0);
+const body=rows.map(r=>{const p=num(r.p);return`<tr><td>${r.c}</td><td>${r.t}</td><td>${r.q}</td><td>AD</td><td>${r.d}</td><td>${p?fmt(p):""}</td><td>${p?fmt(p*r.q):""}</td></tr>`}).join("");
+$("mb").innerHTML=`<h3 style="margin-top:0">Teklif hazır <span class="ok">✓</span></h3><p class="mu">Kaydedildi: Teklif Arşivi / B Firması / 26.09.2026 - Teklif İsteği / <b>teklif.xlsx</b> (önizleme – ${rows.length} satır${full?", tam liste":", sadece fiyatlananlar"})</p>
+<div style="overflow:auto"><table class="xl"><tr><th>Malzeme</th><th>Malzeme Tanımı</th><th>Miktar</th><th>Ö/B</th><th>Teslim Tarihi</th><th>Birim Fiyat</th><th>Toplam</th></tr>${body}</table></div>
+<p><b>Mail metni:</b> Sn. İlgili; teklifiniz ektedir.<br><span class="mu">Konu: Re: Teklif İsteği (16:00 26.09.2026) - 1 · Ek: teklif.xlsx</span></p>
+<div style="display:flex;gap:8px"><button class="btn p" id="nm">Gmail'de yeni mail aç</button><button class="btn" id="cl">Kapat</button></div>
+<p class="mu">Uygulama mail göndermez; Excel'i ekleyip Gönder'e siz basarsınız.</p>`;
+$("md").style.display="flex";$("cl").onclick=()=>$("md").style.display="none";
+$("nm").onclick=()=>window.open("https://mail.google.com/mail/?view=cm&su="+encodeURIComponent("Re: Teklif İsteği (16:00 26.09.2026) - 1")+"&body="+encodeURIComponent("Sn. İlgili;\n\nTeklifiniz ektedir."),"_blank")};
+$("gm").onclick=()=>window.open("https://mail.google.com","_blank");
+render();
+</script></body></html>

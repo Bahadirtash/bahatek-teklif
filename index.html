@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>Bahatek Teklif</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <header><b>Bahatek Teklif</b><span id="status"></span></header>
+    <main>
+      <aside class="col side">
+        <div id="firms"></div>
+        <button class="btn" id="gm">Gmail'i Aç</button>
+        <div id="gmailBox"></div>
+        <button class="btn" id="load">E-posta dosyası yükle (.eml)</button>
+        <button class="btn" id="settings">Ayarlar</button>
+        <div class="mu arch" id="arch"></div>
+      </aside>
+      <section class="mid" id="mid"></section>
+      <aside class="col right" id="rp"><p class="mu">Bir satır seçin.</p></aside>
+    </main>
+    <footer>
+      <span>Fiyatlanan: <b id="cnt">0</b> / <span id="all">0</span></span>
+      <span>Genel toplam: <b id="gt">0,00</b></span><span class="sp"></span>
+      <label class="mu"><input type="checkbox" id="full" /> Tam liste (boş satırlar da gitsin)</label>
+      <button class="btn p" id="prep" disabled>Teklifi Hazırla</button>
+    </footer>
+    <div id="tip"><img id="ti" alt="" /><div id="tt"></div></div>
+    <div id="md"><div class="box" id="mb"></div></div>
+    <div id="drop">.eml dosyalarını bırakın</div>
+    <div id="toast"></div>
+  </body>
+</html>

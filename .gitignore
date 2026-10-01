@@ -1,0 +1,28 @@
+# Gizli: gerçek B firması mailleri ve çizimleri (ticari sır) — ASLA commit etme
+testdata/
+*.eml
+
+# Gizli anahtarlar (GitHub token, Google OAuth vb.) — ASLA commit etme
+.env
+.env.*
+!.env.example
+
+# Bağımlılıklar / derleme çıktıları
+node_modules/
+dist/
+dist-ssr/
+target/
+*.local
+
+# Loglar
+logs
+*.log
+npm-debug.log*
+
+# Editör / işletim sistemi
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.sw?

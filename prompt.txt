@@ -1,0 +1,20 @@
+Merhaba Antigravity! 
+
+Senin hedefin, hazır durumdaki bu "Bahatek Teklif" isimli Tauri (Masaüstü) projesini Windows ortamında derleyerek çalıştırılabilir bir kuruluma (.msi veya .exe) dönüştürmek. 
+
+**Proje Hakkında:**
+Bu proje, talaşlı imalat yapan bir firma için teklif otomasyonu programıdır. Kullanıcının Gmail'ine bağlanıp e-postaları ve PDF çizimlerini otomatik çeker, teklif fiyatları girildikten sonra bir Excel şablonunu doldurarak arşive kaydeder.
+Ön yüzü (HTML/TS/Vite) ve arka yüzü (Tauri/Rust) tamamen yazılmış ve çalışır durumdadır. Mac ortamında başarıyla test edilmiştir.
+
+**Mevcut Durum:**
+Projenin kodlamasında hiçbir eksik yoktur. `src/main.ts` içinde arayüz, `src-tauri/src/` içinde Rust tabanlı arka plan (Gmail IMAP, OAuth, Dosya işlemleri) bulunmaktadır. 
+
+**Senin Görevin (Adım Adım):**
+
+1. **Ön Gereksinimler:** Windows sisteminde Rust (`cargo`), Node.js (`npm`), ve WebView2 bağımlılıklarının kurulu olduğundan emin ol. Eksikse kullanıcıyı yönlendir.
+2. **Bağımlılıkları Yükle:** Proje dizininde `npm install` komutunu çalıştırarak gerekli paketleri kur.
+3. **Test Et:** `npm run tauri dev` komutu ile uygulamanın Windows üzerinde sorunsuz açıldığını ve çalıştığını teyit et. (Kullanıcıdan arayüzü test etmesini iste).
+4. **Derle (Build):** Her şey tamamsa, `npm run tauri build` komutunu çalıştır. Bu işlem uygulamanın Windows kurulum dosyasını (`.msi` veya `.exe`) `src-tauri/target/release/bundle/` dizininde oluşturacaktır.
+5. **Kullanıcıya Teslim:** Kurulum dosyasının başarıyla oluşturulduğunu ve nerede bulunduğunu kullanıcıya bildir.
+
+**Önemli Not:** Projenin mantığı veya kod mimarisi üzerinde (kullanıcı özellikle istemedikçe veya Windows'a özel bir çökme yaşanmadıkça) değişiklik YAPMA. Tek hedefin bu projeyi Windows üzerinde derleyip paketlemektir. Kolay gelsin!
