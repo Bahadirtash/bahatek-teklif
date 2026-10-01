@@ -511,28 +511,20 @@ function renderMid(): void {
     return;
   }
 
+  const qc = req.qtyCol;
   const dc = descCol(req);
+  const head = req.headers.map((h, c) => `<th class="${c === qc ? "n" : ""}">${esc(h)}</th>`).join("");
   const rows = req.items.map((it) => {
+    const cells = it.cells.map((v, c) => {
+      if (c === req.codeCol) return `<td class="code"><span class="dot ${it.status}" title="${statusLabel(it)}"></span>${esc(v)}</td>`;
+      if (c === dc) return `<td class="desc" title="${esc(v)}">${esc(v)}</td>`;
+      return `<td class="${c === qc ? "n" : ""}">${esc(v)}</td>`;
+    }).join("");
     const pt = priceText(req, it);
     const bad = pt && parsePrice(pt) == null;
-    const prev = getPreviousPrice(req, it.code);
-    
-    let thumbUrl = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' fill='%23f4f5f7'/%3E%3Cpath d='M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z' fill='%23bdc3c7'/%3E%3C/svg%3E";
-    
-    return `<div class="bubble ${it.index === state.selectedItem ? "sel" : ""}" data-i="${it.index}">
-      <img src="${thumbUrl}" class="b-thumb" alt="Çizim" id="bimg-${it.index}">
-      <div class="b-info">
-        <div class="b-title"><span class="dot ${it.status}" title="${statusLabel(it)}"></span>${esc(it.code)}</div>
-        <div class="b-meta">${esc(it.cells[dc] || "Açıklama yok")}</div>
-        <div class="b-meta">Miktar: ${it.qty != null ? it.qty : "Belirsiz"}</div>
-        ${prev ? `<div class="b-prev">Önceki: ${formatMoney(prev.price)} TL (${new Date(prev.date).toLocaleDateString("tr-TR")})</div>` : ""}
-      </div>
-      <div class="b-price">
-        <div class="b-price-label">Birim Fiyat</div>
-        <input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="0,00" ${bad ? 'class="bad"' : ""}>
-        <div class="b-total" id="t${it.index}">${totalText(req, it)}</div>
-      </div>
-    </div>`;
+    return `<tr class="row ${it.index === state.selectedItem ? "sel" : ""}" data-i="${it.index}">${cells}
+      <td class="n"><input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="—" ${bad ? 'style="border-color:var(--er)"' : ""}></td>
+      <td class="n tot" id="t${it.index}">${totalText(req, it)}</td></tr>`;
   }).join("");
 
   const notes: string[] = [];
@@ -544,7 +536,7 @@ function renderMid(): void {
   const missing = req.items.filter((i) => i.status === "missing").length;
   if (req.partTotal && req.partsReceived.length && req.partsReceived.length < req.partTotal) {
     const miss = Array.from({ length: req.partTotal }, (_, k) => k + 1).filter((p) => !req.partsReceived.includes(p));
-    notes.push(`<span class="warn">Parça ${miss.join(", ")} henüz gelmedi</span> — ${waiting} kalemin çizimi bekleniyor.`);
+    notes.push(`<span class="warn">Parça ${miss.join(", ")} henüz gelmedi</span> — ${waiting} kalemin çizimi bekleniyor. Parça gelince otomatik eşleşir.`);
   } else if (waiting) {
     notes.push(`${waiting} kalemin çizimi bekleniyor.`);
   }
@@ -557,23 +549,14 @@ function renderMid(): void {
     notes.push(`<b>Adı çizim biçimine uymayan PDF ekleri:</b><ul>${req.unrecognizedPdfs.map((d) => `<li>${esc(d.filename)}</li>`).join("")}</ul>`);
   }
   for (const w of req.warnings) notes.push(`<span class="warn">${esc(w)}</span>`);
-  if (!req.items.length) notes.push(`<span class="warn">Bu e-postalarda kalem tablosu bulunamadı.</span>`);
+  if (!req.items.length) notes.push(`<span class="warn">Bu e-postalarda kalem tablosu bulunamadı. Tablo içeren parça gelince birleşir.</span>`);
 
   const src = req.mails.map((m) => (m.forwardedBy ? `${m.sender.address} (ileten: ${m.forwardedBy.address})` : m.sender.address));
-  mid.innerHTML = `<div class="bubbles" id="tb">${rows}</div>
-    <p class="mu">Çizim önizlemesi için küçük resme tıklayın.</p>
+  mid.innerHTML = `<div class="tw"><table><thead><tr>${head}<th class="n new">Birim Fiyat</th><th class="n new">Toplam</th></tr></thead>
+    <tbody id="tb">${rows}</tbody></table></div>
+    <p class="mu">Satırın üzerine gelince çizim önizlemesi açılır, tıklayınca sağda büyür.</p>
     ${notes.map((n) => `<div class="note">${n}</div>`).join("")}
     <p class="mu">Gönderen: ${esc([...new Set(src)].join(", "))} · <a href="#" id="rm">Bu isteği listeden kaldır</a></p>`;
-
-  req.items.forEach(async it => {
-    if (it.drawings[0]) {
-      try {
-        const c = await renderCrop(it.drawings[0]);
-        const img = document.getElementById(`bimg-${it.index}`) as HTMLImageElement;
-        if (img) img.src = c.url;
-      } catch (e) {}
-    }
-  });
 
   mid.querySelectorAll<HTMLElement>("[data-um]").forEach((a) => (a.onclick = () => showFullPage(req.unmatchedDrawings[Number(a.dataset.um)])));
   $("rm").onclick = (e) => {
@@ -585,19 +568,37 @@ function renderMid(): void {
 
 function bindTable(req: QuoteRequest): void {
   const tb = $("tb");
-  tb.addEventListener("click", (e) => {
-    const t = e.target as HTMLElement;
-    const bubble = t.closest<HTMLElement>(".bubble");
-    if (!bubble) return;
-    const i = Number(bubble.dataset.i);
-    
-    if (t.tagName === "IMG" && t.classList.contains("b-thumb")) {
-      const item = req.items[i];
-      if (item && item.drawings.length > 0) showFullPage(item.drawings[0], item);
+  tb.addEventListener("mouseover", (e) => {
+    const tr = (e.target as HTMLElement).closest<HTMLElement>("tr.row");
+    if (!tr) {
+      $("tip").style.display = "none";
       return;
     }
-    
-    if (t.tagName === "INPUT") {
+    const item = req.items[Number(tr.dataset.i)];
+    const d = item?.drawings[0];
+    if (d) {
+      const tip = $("tip");
+      tip.style.display = "block";
+      const img = $("ti") as HTMLImageElement;
+      if (img.dataset.f !== d.filename) {
+        img.src = "";
+        img.dataset.f = d.filename;
+        renderCrop(d).then((c) => {
+          if (img.dataset.f === d.filename) img.src = c.url;
+        }).catch(() => (img.src = ""));
+      }
+      const rect = tr.getBoundingClientRect();
+      let top = rect.bottom;
+      if (top + tip.offsetHeight > window.innerHeight) top = Math.max(0, rect.top - tip.offsetHeight);
+      tip.style.top = `${top}px`;
+      tip.style.left = `${Math.min(rect.left + 50, window.innerWidth - tip.offsetWidth - 20)}px`;
+    }
+  });
+  tb.addEventListener("click", (e) => {
+    const tr = (e.target as HTMLElement).closest<HTMLElement>("tr.row");
+    if (!tr) return;
+    const i = Number(tr.dataset.i);
+    if ((e.target as HTMLElement).tagName === "INPUT") {
       if (i !== state.selectedItem) openItem(i, false);
       return;
     }
@@ -608,7 +609,7 @@ function bindTable(req: QuoteRequest): void {
     if (inp.tagName !== "INPUT") return;
     const item = req.items[Number(inp.dataset.i)];
     setPrice(req, item, inp.value);
-    inp.classList.toggle("bad", !!inp.value.trim() && parsePrice(inp.value) == null);
+    inp.style.borderColor = (inp.value.trim() && parsePrice(inp.value) == null) ? "var(--er)" : "";
     const tEl = $(`t${item.index}`);
     if (tEl) tEl.textContent = totalText(req, item);
     renderFooter();
@@ -638,19 +639,102 @@ function bindTable(req: QuoteRequest): void {
 
 // ---------------------------------------------------------------- sağ bölme
 
+let sheetIndex = 0;
+
 function openItem(i: number, focusPrice = true): void {
   const req = currentRequest();
   if (!req || i < 0 || i >= req.items.length) return;
   state.selectedItem = i;
-  document.querySelectorAll<HTMLElement>(".bubble").forEach((x) => x.classList.toggle("sel", Number(x.dataset.i) === i));
-  document.querySelector(`.bubble[data-i="${i}"]`)?.scrollIntoView({ block: "nearest" });
-  if (focusPrice) {
-    const inp = document.querySelector<HTMLInputElement>(`input[data-i="${i}"]`);
-    if (inp) { inp.focus(); inp.select(); }
-  }
+  document.querySelectorAll<HTMLElement>("tr.row").forEach((x) => x.classList.toggle("sel", Number(x.dataset.i) === i));
+  document.querySelector(`tr.row[data-i="${i}"]`)?.scrollIntoView({ block: "nearest" });
+  $("tip").style.display = "none";
+  renderRight(focusPrice);
 }
 
-function renderRight(_focusPrice = false): void {}
+function renderRight(focusPrice = false): void {
+  const rp = $("rp");
+  const req = currentRequest();
+  const item = req?.items[state.selectedItem];
+  if (!req || !item) {
+    rp.innerHTML = `<p class="mu">Bir satır seçin.</p>`;
+    return;
+  }
+  const dc = descCol(req);
+  const meta = req.headers
+    .map((h, c) => (c === req.codeCol || c === dc ? "" : `${esc(h)}: ${esc(item.cells[c] ?? "")}`))
+    .filter(Boolean).join(" · ");
+  const sheets = item.drawings.length > 1
+    ? `<div class="tools">${item.drawings.map((d, k) => `<button class="btn sm ${k === sheetIndex ? "p" : ""}" data-sh="${k}">Sayfa ${d.sheet}</button>`).join("")}</div>`
+    : "";
+  const d = item.drawings[sheetIndex];
+  const waitingText = item.status === "waiting"
+    ? "Çizim bekleniyor — diğer parça gelince otomatik eşleşir."
+    : "Bu kalemin çizimi e-postalarda yok.";
+    
+  const prev = getPreviousPrice(req, item.code);
+  let prevText = "";
+  if (prev) {
+    prevText = `<div class="b-prev" style="margin-top:10px; color:var(--wa); font-weight:600">Önceki Fiyat: ${formatMoney(prev.price)} TL (${new Date(prev.date).toLocaleDateString("tr-TR")})</div>`;
+  }
+
+  rp.innerHTML = `<h3>${esc(item.code)}</h3><div class="mu">${esc(dc !== req.codeCol ? item.cells[dc] ?? "" : "")}</div>
+    ${sheets}
+    <div class="img" id="cropBox" title="${d ? "Tam sayfa açmak için tıklayın" : ""}">${d ? `<div class="mu">Çizim hazırlanıyor…</div>` : `<div class="mu">${waitingText}</div>`}</div>
+    ${d ? `<div class="tools"><button class="btn sm" id="fullp">Tam sayfa aç</button><span class="mu">${esc(d.filename)}</span></div>` : ""}
+    <div class="mu meta">${meta}</div>
+    ${prevText}
+    <div class="pr"><input id="pi" placeholder="Birim fiyat" value="${esc(priceText(req, item))}" inputmode="decimal"><button class="btn p" id="pa">Uygula</button></div>
+    <div class="mu" style="margin-top:6px">Enter: uygula ve sonraki kaleme geç</div>`;
+
+  rp.querySelectorAll<HTMLElement>("[data-sh]").forEach((b) => (b.onclick = () => {
+    sheetIndex = Number(b.dataset.sh);
+    renderRight();
+  }));
+  if (d) {
+    $("cropBox").onclick = () => showFullPage(d, item);
+    $("fullp").onclick = () => showFullPage(d, item);
+    renderCrop(d).then((c) => {
+      const box = $("cropBox");
+      if (!box || state.selectedItem !== item.index || item.drawings[sheetIndex] !== d) return;
+      box.innerHTML = `<img src="${c.url}" alt="${esc(item.code)}">`;
+    }).catch((e) => {
+      const box = $("cropBox");
+      if (box) box.innerHTML = `<div class="mu err">Çizim açılamadı: ${esc(errText(e))}</div>`;
+    });
+  }
+
+  const pi = $<HTMLInputElement>("pi");
+  const applyPrice = () => {
+    const p = parsePrice(pi.value);
+    if (p != null && p > 0) pi.value = formatMoney(p);
+    setPrice(req, item, pi.value);
+    const inp = document.querySelector<HTMLInputElement>(`input[data-i="${item.index}"]`);
+    if (inp) {
+      inp.value = pi.value;
+      inp.style.borderColor = "";
+    }
+    const tEl = $(`t${item.index}`);
+    if (tEl) tEl.textContent = totalText(req, item);
+    renderFooter();
+  };
+  pi.onkeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyPrice();
+      const next = document.querySelector<HTMLInputElement>(`input[data-i="${item.index + 1}"]`);
+      if (next) {
+        openItem(item.index + 1, false);
+        next.focus();
+        next.select();
+      }
+    }
+  };
+  $("pa").onclick = applyPrice;
+  if (focusPrice) {
+    pi.focus();
+    pi.select();
+  }
+}
 
 // ---------------------------------------------------------------- alt şerit
 
