@@ -52,7 +52,7 @@ async function renderPageCanvas(d: Drawing, maxPixels: number, maxScale: number)
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  await page.render({ canvasContext: ctx, viewport: vp, canvas }).promise;
   return { canvas, scale, w: base.width, h: base.height };
 }
 
