@@ -570,7 +570,12 @@ function renderMid(): void {
 function bindTable(req: QuoteRequest): void {
   const tb = $("tb");
   tb.addEventListener("mouseover", (e) => {
-    const tr = (e.target as HTMLElement).closest<HTMLElement>("tr.row");
+    const target = e.target as HTMLElement;
+    if (target.tagName !== "INPUT") {
+      $("tip").style.display = "none";
+      return;
+    }
+    const tr = target.closest<HTMLElement>("tr.row");
     if (!tr) {
       $("tip").style.display = "none";
       return;
