@@ -41,12 +41,14 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           args: --bundles nsis,msi
-          # Etiketle çalışınca taslak sürüm oluşturur; elle çalışınca sadece yapıt yükler.
+          # Etiketle çalışınca sürüm oluşturur; elle çalışınca sadece yapıt yükler.
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('Bahatek Teklif {0}', github.ref_name) || '' }}
-          releaseDraft: true
+          releaseDraft: false
 
       - uses: actions/upload-artifact@v4
         with:

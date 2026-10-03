@@ -8,6 +8,7 @@ import {
   firmKey, firmOf, isPublicDomain, itemKey, loadState, newId, persist, state, suggestFirmName,
 } from "./state";
 import type { Firm, Result } from "./state";
+import { check } from "@tauri-apps/plugin-updater";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -1067,6 +1068,16 @@ async function init(): Promise<void> {
   if (import.meta.env.DEV && backend.inTauri) {
     const { runSelfTest } = await import("./devtest");
     runSelfTest({ state, addEmlFiles, currentRequest });
+  }
+
+  if (backend.inTauri && import.meta.env.PROD) {
+    check().then(async (update) => {
+      if (update) {
+        toast("Yepyeni bir sürüm bulundu! Arka planda kuruluyor, lütfen bekleyin...", 10000);
+        await update.downloadAndInstall();
+        toast("Güncelleme başarıyla kuruldu! Yenilikleri görmek için uygulamayı kapatıp tekrar açın.", 60000);
+      }
+    }).catch(e => console.warn("Güncelleme kontrol hatası:", e));
   }
 }
 

@@ -15,6 +15,7 @@
     "@tauri-apps/plugin-autostart": "^2.6.0",
     "@tauri-apps/plugin-dialog": "^2.8.0",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-updater": "^2.13.1",
     "pdfjs-dist": "^6.3.289",
     "postal-mime": "^4.0.0"
   },
