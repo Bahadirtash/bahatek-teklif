@@ -16,7 +16,14 @@ export function codeKey(code: string): string | null {
   return m ? `${m[1]}_${m[2].toUpperCase()}` : null;
 }
 
-export function drawingKey(filename: string): { key: string; sheet: number } | null {
+export function drawingKey(filename: string): { key: string; sheet: number } {
   const m = DRAWING_RE.exec(filename.trim());
-  return m ? { key: `${m[1]}_${m[2].toUpperCase()}`, sheet: Number(m[3]) } : null;
+  if (m) {
+    return { key: `${m[1]}_${m[2].toUpperCase()}`, sheet: Number(m[3]) };
+  }
+  // Eğer özel formatta değilse, dosya adını (uzantısız) anahtar olarak kullan
+  let base = filename.trim();
+  const lastDot = base.lastIndexOf(".");
+  if (lastDot > 0) base = base.substring(0, lastDot);
+  return { key: base, sheet: 1 };
 }

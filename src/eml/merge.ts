@@ -153,6 +153,38 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
     }
   }
 
+  if (table?.rows && table.rows.length > 0) {
+    const unusedDrawings = drawings.filter((d) => !used.has(d));
+    if (unusedDrawings.length > 0) {
+      const byKey = new Map<string, Drawing[]>();
+      for (const d of unusedDrawings) {
+        if (!byKey.has(d.key)) byKey.set(d.key, []);
+        byKey.get(d.key)!.push(d);
+      }
+      let index = items.length;
+      for (const [key, own] of byKey.entries()) {
+        own.sort((a, b) => a.sheet - b.sheet);
+        own.forEach((d) => used.add(d));
+        
+        const newCells = Array(table.rows[0]?.length || 2).fill("");
+        if (codeCol >= 0) newCells[codeCol] = key;
+        else newCells[0] = key;
+        const descCol = codeCol === 0 ? 1 : 0;
+        newCells[descCol] = "Tabloda eşleşmedi, ekten eklendi";
+
+        items.push({
+          index: index++,
+          cells: newCells,
+          code: key,
+          key: key,
+          qty: null,
+          drawings: own,
+          status: "ready",
+        });
+      }
+    }
+  }
+
   const first = mails[0];
   const sKey = senderKey(first);
   return {
