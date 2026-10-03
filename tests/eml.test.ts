@@ -50,7 +50,7 @@ describe("kod ve çizim anahtarı", () => {
     expect(codeKey("FU00230931-A-03")).toBe("00230931_A");
     expect(drawingKey("U00314268_B_SHT1.pdf")).toEqual({ key: "00314268_B", sheet: 1 });
     expect(drawingKey("U00314268_B_SHT2 (1).pdf")).toEqual({ key: "00314268_B", sheet: 2 });
-    expect(drawingKey("teknik_sartname.pdf")).toBeNull();
+    expect(drawingKey("teknik_sartname.pdf")).toEqual({ key: "teknik_sartname", sheet: 1 });
     expect(codeKey("TIA KAPAK")).toBeNull();
   });
 });
@@ -92,10 +92,12 @@ describe("parçalı mail birleştirme", () => {
     const reqs = groupMails([pdfFirst, tableLater]);
     expect(reqs).toHaveLength(1);
     const r = reqs[0];
-    expect(r.items.map((i) => i.status)).toEqual(["waiting", "waiting", "ready"]);
-    // Eşleşmeyen ve tanınmayan ekler kaybolmaz.
-    expect(r.unmatchedDrawings.map((d) => d.filename)).toEqual(["U09999999_Z_SHT1.pdf"]);
-    expect(r.unrecognizedPdfs.map((d) => d.filename)).toEqual(["sartname.pdf"]);
+    expect(r.items.map((i) => i.status)).toEqual(["waiting", "waiting", "ready", "ready", "ready"]);
+    expect(r.items[3].code).toBe("09999999_Z");
+    expect(r.items[4].code).toBe("sartname");
+    // Tüm ekler tabloya eklendiği için artık havada kalan çizim/pdf yok
+    expect(r.unmatchedDrawings).toHaveLength(0);
+    expect(r.unrecognizedPdfs).toHaveLength(0);
   });
 
   it("farklı gönderenin aynı etiketli maili birleşmez", async () => {

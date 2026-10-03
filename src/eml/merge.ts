@@ -146,7 +146,7 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
         cells: [key, "Tablo bulunamadı, liste PDF adından oluşturuldu"],
         code: key,
         key: key,
-        qty: null,
+        qty: 1,
         drawings: own,
         status: "ready",
       });
@@ -171,13 +171,14 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
         else newCells[0] = key;
         const descCol = codeCol === 0 ? 1 : 0;
         newCells[descCol] = "Tabloda eşleşmedi, ekten eklendi";
+        if (qtyCol >= 0) newCells[qtyCol] = "1";
 
         items.push({
           index: index++,
           cells: newCells,
           code: key,
           key: key,
-          qty: null,
+          qty: 1,
           drawings: own,
           status: "ready",
         });
