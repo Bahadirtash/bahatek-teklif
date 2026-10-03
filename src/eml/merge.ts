@@ -104,23 +104,54 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
     : partsReceived.length === 0;
 
   const used = new Set<Drawing>();
-  const items: Item[] = (table?.rows ?? []).map((cells, index) => {
-    const code = cells[table!.codeCol];
-    const key = codeKey(code);
-    const own = key ? drawings.filter((d) => d.key === key).sort((a, b) => a.sheet - b.sheet) : [];
-    own.forEach((d) => used.add(d));
-    const qtyText = table!.qtyCol >= 0 ? cells[table!.qtyCol] : "";
-    const qty = /^\d+([.,]\d+)?$/.test(qtyText) ? Number(qtyText.replace(",", ".")) : null;
-    return {
-      index,
-      cells,
-      code,
-      key,
-      qty,
-      drawings: own,
-      status: own.length ? "ready" : complete ? "missing" : "waiting",
-    };
-  });
+  let headers = table?.headers ?? [];
+  let codeCol = table?.codeCol ?? 0;
+  let qtyCol = table?.qtyCol ?? -1;
+
+  let items: Item[] = [];
+  if (table?.rows && table.rows.length > 0) {
+    items = table.rows.map((cells, index) => {
+      const code = cells[codeCol];
+      const key = codeKey(code);
+      const own = key ? drawings.filter((d) => d.key === key).sort((a, b) => a.sheet - b.sheet) : [];
+      own.forEach((d) => used.add(d));
+      const qtyText = qtyCol >= 0 ? cells[qtyCol] : "";
+      const qty = /^\d+([.,]\d+)?$/.test(qtyText) ? Number(qtyText.replace(",", ".")) : null;
+      return {
+        index,
+        cells,
+        code,
+        key,
+        qty,
+        drawings: own,
+        status: own.length ? "ready" : complete ? "missing" : "waiting",
+      };
+    });
+  } else if (drawings.length > 0) {
+    headers = ["Malzeme Kodu", "Açıklama"];
+    codeCol = 0;
+    qtyCol = -1;
+    
+    const byKey = new Map<string, Drawing[]>();
+    for (const d of drawings) {
+      if (!byKey.has(d.key)) byKey.set(d.key, []);
+      byKey.get(d.key)!.push(d);
+    }
+    let index = 0;
+    for (const [key, own] of byKey.entries()) {
+      own.sort((a, b) => a.sheet - b.sheet);
+      own.forEach((d) => used.add(d));
+      items.push({
+        index: index++,
+        cells: [key, "Tablo bulunamadı, liste PDF adından oluşturuldu"],
+        code: key,
+        key: key,
+        qty: null,
+        drawings: own,
+        status: "ready",
+      });
+    }
+  }
 
   const first = mails[0];
   const sKey = senderKey(first);
@@ -134,9 +165,9 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
     partTotal,
     partsReceived,
     mails,
-    headers: table?.headers ?? [],
-    codeCol: table?.codeCol ?? 0,
-    qtyCol: table?.qtyCol ?? -1,
+    headers,
+    codeCol,
+    qtyCol,
     items,
     unmatchedDrawings: drawings.filter((d) => !used.has(d)),
     unrecognizedPdfs,
