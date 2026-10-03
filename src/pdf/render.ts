@@ -61,7 +61,7 @@ export function renderCrop(d: Drawing): Promise<CropImage> {
   let p = crops.get(d);
   if (!p) {
     p = serial(async () => {
-      const { canvas, scale: s, w, h } = await renderPageCanvas(d, 9e6, 2.2);
+      const { canvas, scale: s, w, h } = await renderPageCanvas(d, 16e6, 3.5);
       const ctx = canvas.getContext("2d")!;
       const framePx = findFrame(ctx.getImageData(0, 0, canvas.width, canvas.height));
       const frame = framePx && { x: framePx.x / s, y: framePx.y / s, w: framePx.w / s, h: framePx.h / s };
@@ -101,7 +101,7 @@ export function renderCrop(d: Drawing): Promise<CropImage> {
 /** Tam sayfa (kırpmasız) görüntü; büyütülerek incelenebilsin diye yüksek çözünürlük. */
 export async function renderFullPage(d: Drawing): Promise<{ url: string; width: number; height: number }> {
   return serial(async () => {
-    const { canvas } = await renderPageCanvas(d, 14e6, 3);
+    const { canvas } = await renderPageCanvas(d, 36e6, 6);
     const url = URL.createObjectURL(await canvasToBlob(canvas));
     return { url, width: canvas.width, height: canvas.height };
   });
