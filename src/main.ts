@@ -58,7 +58,7 @@ export function getPreviousPrice(req: QuoteRequest, code: string): { price: numb
     if (rId === req.id) continue;
     const prices = state.prices[rId];
     if (!prices) continue;
-    const key = Object.keys(prices).find(k => k.endsWith(`-${code}`));
+    const key = Object.keys(prices).find(k => k.endsWith(`:${code}`));
     if (key && prices[key]) {
       const p = parsePrice(prices[key]);
       if (p != null && (!best || new Date(offer.at) > new Date(best.date))) {
@@ -522,10 +522,17 @@ function renderMid(): void {
       return `<td class="${c === qc ? "n" : ""}">${esc(v)}</td>`;
     }).join("");
     const pt = priceText(req, it);
+    let prefill = "";
+    if (!pt) {
+      const prev = getPreviousPrice(req, it.code);
+      if (prev) {
+        prefill = `<div class="prev-hint" style="font-size:11px; color:#c65; margin-top:4px;">Önceki: ${formatMoney(prev.price)}₺</div>`;
+      }
+    }
     const bad = pt && parsePrice(pt) == null;
     return `<tr class="row ${it.index === state.selectedItem ? "sel" : ""}" data-i="${it.index}">${cells}
-      <td class="n"><input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="—" ${bad ? 'style="border-color:var(--er)"' : ""}></td>
-      <td class="n tot" id="t${it.index}">${totalText(req, it)}</td></tr>`;
+      <td class="n" style="vertical-align: top;"><input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="—" ${bad ? 'style="border-color:var(--er)"' : ""}>${prefill}</td>
+      <td class="n tot" id="t${it.index}" style="vertical-align: top;">${totalText(req, it)}</td></tr>`;
   }).join("");
 
   const notes: string[] = [];
