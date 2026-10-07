@@ -562,7 +562,6 @@ function renderMid(): void {
     notes.push(`<div class="won-banner">✅ <b>SİPARİŞ ONAYLANDI:</b> Bu teklif kazanıldı ve işleme girmelidir.</div>`);
   }
   const waiting = req.items.filter((i) => i.status === "waiting").length;
-  const missing = req.items.filter((i) => i.status === "missing").length;
   if (req.partTotal && req.partsReceived.length && req.partsReceived.length < req.partTotal) {
     const miss = Array.from({ length: req.partTotal }, (_, k) => k + 1).filter((p) => !req.partsReceived.includes(p));
     notes.push(`<span class="warn">Parça ${miss.join(", ")} henüz gelmedi</span> — ${waiting} kalemin çizimi bekleniyor. Parça gelince otomatik eşleşir.`);
@@ -1099,7 +1098,7 @@ async function init(): Promise<void> {
   }
 
   if (backend.inTauri) {
-    const updateBtn = $("update-btn");
+    const updateBtn = $<HTMLButtonElement>("update-btn");
     if (updateBtn) {
       updateBtn.style.display = "inline-block";
       updateBtn.onclick = async () => {
