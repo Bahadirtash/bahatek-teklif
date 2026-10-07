@@ -115,8 +115,11 @@ export async function parseEml(raw: ArrayBuffer | Uint8Array | string, id?: stri
       continue;
     }
     const dk = drawingKey(filename);
-    if (dk) drawings.push({ filename, key: dk.key, sheet: dk.sheet, data, mailId });
-    else unrecognizedPdfs.push(info);
+    if (dk) {
+      drawings.push({ filename, key: dk.key, sheet: dk.sheet, data, mailId });
+    } else {
+      drawings.push({ filename, key: filename, sheet: 1, data, mailId });
+    }
   }
 
   const tag = REQUEST_TAG_RE.exec(subject);

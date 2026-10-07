@@ -250,10 +250,20 @@ async function prefetch(req: QuoteRequest): Promise<void> {
 
 async function showFullPage(d: Drawing, item: Item | null = null): Promise<void> {
   const req = currentRequest();
+  
+  let prevText = "";
+  if (req && item) {
+    const prev = getPreviousPrice(req, item.code);
+    if (prev) {
+      prevText = `<span style="color:var(--wa); font-weight:600; font-size:14px; margin-right:20px;">Önceki Teklif: ${formatMoney(prev.price)} TL (${new Date(prev.date).toLocaleDateString("tr-TR")})</span>`;
+    }
+  }
+
   const box = openModal(
     `<div class="mhead" style="justify-content: space-between;">
         <h3 style="margin:0">${esc(d.filename)}</h3>
         <div style="display:flex; align-items:center; gap: 16px;">
+          ${prevText}
           ${item && req ? `
           <div id="md-price">
             <label>Teklif Ver:</label>
@@ -295,9 +305,20 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
           const p = parsePrice(pInput.value);
           if (p != null && p > 0) pInput.value = formatMoney(p);
           setPrice(req, item, pInput.value);
-          closeModal();
           renderMid(); // re-render bubbles to show new price
           renderFooter();
+
+          const next = document.querySelector<HTMLInputElement>(`input[data-i="${item.index + 1}"]`);
+          if (next) {
+            closeModal();
+            openItem(item.index + 1, false);
+            const nextItem = req.items[item.index + 1];
+            if (nextItem && nextItem.drawings && nextItem.drawings[0]) {
+               showFullPage(nextItem.drawings[0], nextItem);
+            }
+          } else {
+            closeModal();
+          }
         }
       };
     }
@@ -547,11 +568,6 @@ function renderMid(): void {
     notes.push(`<span class="warn">Parça ${miss.join(", ")} henüz gelmedi</span> — ${waiting} kalemin çizimi bekleniyor. Parça gelince otomatik eşleşir.`);
   } else if (waiting) {
     notes.push(`${waiting} kalemin çizimi bekleniyor.`);
-  }
-  if (missing) notes.push(`<span class="err">${missing} kalemin çizimi hiçbir parçada gelmedi.</span>`);
-  if (req.unmatchedDrawings.length) {
-    notes.push(`<b>Hiçbir kaleme eşleşmeyen çizimler (${req.unmatchedDrawings.length}):</b><ul>${req.unmatchedDrawings
-      .map((d, k) => `<li><a data-um="${k}">${esc(d.filename)}</a></li>`).join("")}</ul>`);
   }
   if (req.unrecognizedPdfs.length) {
     notes.push(`<b>Adı çizim biçimine uymayan PDF ekleri:</b><ul>${req.unrecognizedPdfs.map((d) => `<li>${esc(d.filename)}</li>`).join("")}</ul>`);
@@ -1080,6 +1096,36 @@ async function init(): Promise<void> {
   if (import.meta.env.DEV && backend.inTauri) {
     const { runSelfTest } = await import("./devtest");
     runSelfTest({ state, addEmlFiles, currentRequest });
+  }
+
+  if (backend.inTauri) {
+    const updateBtn = $("update-btn");
+    if (updateBtn) {
+      updateBtn.style.display = "inline-block";
+      updateBtn.onclick = async () => {
+        updateBtn.textContent = "Denetleniyor...";
+        updateBtn.disabled = true;
+        try {
+          const update = await check();
+          if (update) {
+            updateBtn.textContent = "İndiriliyor...";
+            toast("Yeni sürüm indiriliyor, lütfen bekleyin...", 15000);
+            await update.downloadAndInstall();
+            updateBtn.textContent = "GÜNCELLENDİ";
+            alert("Güncelleme başarıyla kuruldu! Yenilikleri görmek için uygulamayı kapatıp tekrar açın.");
+          } else {
+            updateBtn.textContent = "Güncel";
+            toast("Uygulama zaten en güncel sürümde.");
+            setTimeout(() => { updateBtn.textContent = "Güncelleme Denetle"; updateBtn.disabled = false; }, 3000);
+          }
+        } catch (e) {
+          updateBtn.textContent = "Hata!";
+          console.warn("Güncelleme kontrol hatası:", e);
+          toast("Güncelleme kontrol edilemedi.");
+          setTimeout(() => { updateBtn.textContent = "Güncelleme Denetle"; updateBtn.disabled = false; }, 3000);
+        }
+      };
+    }
   }
 
   if (backend.inTauri && import.meta.env.PROD) {
