@@ -1,7 +1,7 @@
 {
   "name": "bahatek-teklif",
   "private": true,
-  "version": "2.1.6",
+  "version": "2.1.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,8 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-updater": "^2.13.1",
     "pdfjs-dist": "^6.3.289",
-    "postal-mime": "^4.0.0"
+    "postal-mime": "^4.0.0",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

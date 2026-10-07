@@ -3,7 +3,7 @@ import * as backend from "./backend";
 import { groupMails, parseEml } from "./eml";
 import type { Drawing, Item, QuoteRequest } from "./eml";
 import { cleanSubject, dayOf, esc, formatMoney, gmailComposeUrl, parsePrice, todayDotted } from "./format";
-import { renderCrop, renderFullPage } from "./pdf/render";
+import { renderCrop, renderFullPage, extractPdfInfo } from "./pdf/render";
 import {
   firmKey, firmOf, isPublicDomain, itemKey, loadState, newId, persist, state, suggestFirmName,
 } from "./state";
@@ -52,8 +52,8 @@ function priceOf(req: QuoteRequest, item: Item): number | null {
   const p = parsePrice(priceText(req, item));
   return p != null && p > 0 ? p : null;
 }
-export function getPreviousPrice(req: QuoteRequest, code: string): { price: number; date: string } | null {
-  let best: { price: number; date: string } | null = null;
+export function getPreviousPrice(req: QuoteRequest, code: string): { price: number; date: string; qty?: number } | null {
+  let best: { price: number; date: string; qty?: number } | null = null;
   for (const [rId, offer] of Object.entries(state.offers)) {
     if (rId === req.id) continue;
     const prices = state.prices[rId];
@@ -62,7 +62,13 @@ export function getPreviousPrice(req: QuoteRequest, code: string): { price: numb
     if (key && prices[key]) {
       const p = parsePrice(prices[key]);
       if (p != null && (!best || new Date(offer.at) > new Date(best.date))) {
-        best = { price: p, date: offer.at };
+        let qty: number | undefined;
+        const oldReq = state.requests.find(r => r.id === rId);
+        if (oldReq) {
+          const oldItem = oldReq.items.find(i => itemKey(i.index, i.code) === key);
+          if (oldItem && oldItem.qty != null) qty = oldItem.qty;
+        }
+        best = { price: p, date: offer.at, qty };
       }
     }
   }
@@ -255,7 +261,7 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
   if (req && item) {
     const prev = getPreviousPrice(req, item.code);
     if (prev) {
-      prevText = `<span style="color:var(--wa); font-weight:600; font-size:14px; margin-right:20px;">Önceki Teklif: ${formatMoney(prev.price)} TL (${new Date(prev.date).toLocaleDateString("tr-TR")})</span>`;
+      prevText = `<span style="color:var(--wa); font-weight:600; font-size:14px; margin-right:20px;">Önceki Teklif: ${formatMoney(prev.price)} TL (${prev.qty ? prev.qty + ' adet, ' : ''}${new Date(prev.date).toLocaleDateString("tr-TR")})</span>`;
     }
   }
 
@@ -263,6 +269,7 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
     `<div class="mhead" style="justify-content: space-between;">
         <h3 style="margin:0">${esc(d.filename)}</h3>
         <div style="display:flex; align-items:center; gap: 16px;">
+          <div id="pdf-extra-info"></div>
           ${prevText}
           ${item && req ? `
           <div id="md-price">
@@ -323,6 +330,17 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
       };
     }
   }
+
+  extractPdfInfo(d).then(info => {
+    const el = document.getElementById("pdf-extra-info");
+    if (el && (info.material || info.weight)) {
+      const parts = [];
+      if (info.material) parts.push(`Cinsi: ${esc(info.material)}`);
+      if (info.weight) parts.push(`Ağırlık: ${esc(info.weight)}`);
+      el.innerHTML = `<span style="color:#2ecc71; font-weight:600; font-size:14px; margin-right:15px;">${parts.join(" | ")}</span>`;
+    }
+  });
+
   try {
     const page = await renderFullPage(d);
     if (!box.isConnected || $("pv") == null) return;
