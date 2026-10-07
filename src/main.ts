@@ -784,7 +784,6 @@ function renderFooter(): void {
   const full = $<HTMLInputElement>("full");
   full.checked = req ? !!state.settings.fullList[firmKey(req)] : false;
   full.disabled = !req;
-  $<HTMLButtonElement>("prep").disabled = !req || !items.length;
 }
 
 function renderStatus(): void {
@@ -858,7 +857,14 @@ async function recordData(req: QuoteRequest, offerPath: string): Promise<void> {
 
 async function prepareOffer(): Promise<void> {
   const req = currentRequest();
-  if (!req) return;
+  if (!req) {
+    toast("Lütfen önce bir teklif isteği seçin.");
+    return;
+  }
+  if (!req.items || req.items.length === 0) {
+    toast("Bu istekte fiyatlandırılabilecek kalem bulunamadı.");
+    return;
+  }
   const full = !!state.settings.fullList[firmKey(req)];
   const rows = req.items.filter((it) => full || priceOf(req, it) != null);
   const unpriced = req.items.filter((it) => priceOf(req, it) == null).length;
