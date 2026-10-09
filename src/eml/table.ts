@@ -73,8 +73,9 @@ export function tableFromHtml(html: string): ItemTable | null {
 
   const data = rows.slice(best.start, best.end);
   const prev = rows[best.start - 1];
+  const isHeaderLike = (r: string[]) => r.some(c => /malzeme|a[cç][ıi]klama|miktar|fiyat|tarih|tan[ıi]m|s[ıi]ra/i.test(normalizeHeader(c)));
   const headers =
-    prev && prev.length === data[0].length && !prev.some(isItemCode)
+    prev && prev.length === data[0].length && !prev.some(isItemCode) && isHeaderLike(prev)
       ? prev
       : data[0].length === DEFAULT_HEADERS.length
         ? [...DEFAULT_HEADERS]
@@ -124,8 +125,9 @@ export function tableFromText(text: string): TextTableResult {
   if (!rows.length) return { table: null, unparsed };
 
   const headerLine = (lines[firstRowLine - 1] ?? "").trim();
+  const isHeaderLike = (r: string[]) => r.some(c => /malzeme|a[cç][ıi]klama|miktar|fiyat|tarih|tan[ıi]m|s[ıi]ra/i.test(normalizeHeader(c)));
   let headers: string[];
-  if (headerLine.includes("\t") && headerLine.split(/\t+/).length === rows[0].length) {
+  if (headerLine.includes("\t") && headerLine.split(/\t+/).length === rows[0].length && isHeaderLike(headerLine.split(/\t+/))) {
     headers = headerLine.split(/\t+/).map((h) => h.trim());
   } else if (rows[0].length === DEFAULT_HEADERS.length) {
     headers = [...DEFAULT_HEADERS];

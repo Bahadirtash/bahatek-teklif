@@ -93,6 +93,7 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
       drawings.push(d);
     }
   }
+  const otherAttachments = mails.flatMap((m) => m.otherAttachments);
   const unrecognizedPdfs: OtherAttachment[] = mails.flatMap((m) => m.unrecognizedPdfs);
 
   const partsReceived = [...new Set(mails.map((m) => m.partNo).filter((n): n is number => n != null))].sort(
@@ -204,6 +205,7 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
     items,
     unmatchedDrawings: drawings.filter((d) => !used.has(d)),
     unrecognizedPdfs,
+    otherAttachments,
     warnings,
   };
 }

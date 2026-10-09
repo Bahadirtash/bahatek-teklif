@@ -142,6 +142,24 @@ pub fn save_offer(offer: Offer) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+pub fn save_excel_file(archive_root: String, firm: String, folder: String, data: Vec<u8>) -> Result<String, String> {
+    let path = Path::new(&archive_root)
+        .join(safe_name(&firm))
+        .join(safe_name(&folder))
+        .join("teklif.xlsx");
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Klasör oluşturulamadı: {e}"))?;
+    }
+    let tmp = path.with_extension("xlsx.tmp");
+    std::fs::write(&tmp, data).map_err(|e| format!("Excel dosyası yazılamadı: {e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("teklif.xlsx kaydedilemedi (dosya Excel'de açık olabilir): {e}")
+    })?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

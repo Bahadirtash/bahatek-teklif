@@ -87,6 +87,11 @@ export async function saveOffer(offer: OfferPayload): Promise<string> {
   return invoke<string>("save_offer", { offer });
 }
 
+export async function saveExcelFile(archiveRoot: string, firm: string, folder: string, data: Uint8Array): Promise<string> {
+  if (!inTauri) throw new Error("Excel kaydı yalnızca masaüstü uygulamasında yapılır.");
+  return invoke("save_excel_file", { archiveRoot, firm, folder, data: Array.from(data) });
+}
+
 export async function openUrl(url: string): Promise<void> {
   if (!inTauri) {
     window.open(url, "_blank");

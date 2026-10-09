@@ -44,11 +44,11 @@ function currentRequest(): QuoteRequest | null {
   return state.requests.find((r) => r.id === state.selectedRequest) ?? null;
 }
 
-function priceText(req: QuoteRequest, item: Item): string {
+export function priceText(req: QuoteRequest, item: Item): string {
   return state.prices[req.id]?.[itemKey(item.index, item.code)] ?? "";
 }
 
-function priceOf(req: QuoteRequest, item: Item): number | null {
+export function priceOf(req: QuoteRequest, item: Item): number | null {
   const p = parsePrice(priceText(req, item));
   return p != null && p > 0 ? p : null;
 }
@@ -893,21 +893,33 @@ async function prepareOffer(): Promise<void> {
 
   let path: string;
   try {
-    path = await backend.saveOffer({
-      archiveRoot: state.settings.archiveRoot,
-      firm,
-      folder,
-      headers: [...req.headers, "Önceki Fiyat", "Önceki Tarih"],
-      qtyCol: req.qtyCol,
-      rows: rows.map((it) => {
-        const prev = getPreviousPrice(req, it.code);
-        return {
-          cells: [...it.cells, prev ? formatMoney(prev.price) : "", prev ? new Date(prev.date).toLocaleDateString("tr-TR") : ""],
-          qty: it.qty,
-          price: priceOf(req, it)
-        };
-      }),
-    });
+    let templateData: Uint8Array | null = null;
+    const templateAtt = req.unrecognizedPdfs?.find(a => a.filename.toLowerCase().endsWith(".xlsx")) || req.otherAttachments?.find(a => a.filename.toLowerCase().endsWith(".xlsx"));
+    if (templateAtt && templateAtt.data) {
+      templateData = templateAtt.data;
+    }
+    
+    if (templateData) {
+      const { fillExcelTemplate } = await import("./excel");
+      const outData = await fillExcelTemplate(req, templateData, rows);
+      path = await backend.saveExcelFile(state.settings.archiveRoot, firm, folder, outData);
+    } else {
+      path = await backend.saveOffer({
+        archiveRoot: state.settings.archiveRoot,
+        firm,
+        folder,
+        headers: [...req.headers, "Önceki Fiyat", "Önceki Tarih"],
+        qtyCol: req.qtyCol,
+        rows: rows.map((it) => {
+          const prev = getPreviousPrice(req, it.code);
+          return {
+            cells: [...it.cells, prev ? formatMoney(prev.price) : "", prev ? new Date(prev.date).toLocaleDateString("tr-TR") : ""],
+            qty: it.qty,
+            price: priceOf(req, it)
+          };
+        }),
+      });
+    }
   } catch (e) {
     openModal(`<h3 style="margin-top:0" class="err">Teklif kaydedilemedi</h3><p>${esc(errText(e))}</p>
       <div style="display:flex;gap:8px"><button class="btn" id="cl">Kapat</button></div>`);

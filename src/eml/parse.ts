@@ -111,7 +111,7 @@ export async function parseEml(raw: ArrayBuffer | Uint8Array | string, id?: stri
     const isDrawing = (att.mimeType === "application/pdf" || /^image\/(png|jpeg)$/i.test(att.mimeType) || /\.(pdf|png|jpe?g)$/i.test(filename)) && !/\.(step|stp)$/i.test(filename);
     const info = { filename, mimeType: att.mimeType, size: data.byteLength, mailId };
     if (!isDrawing) {
-      otherAttachments.push(info);
+      otherAttachments.push({ ...info, data });
       continue;
     }
     const dk = drawingKey(filename);

@@ -56,6 +56,7 @@ pub fn run() {
             store::record_file,
             store::log_frontend,
             offer::save_offer,
+            offer::save_excel_file,
             gmail::gmail_status,
             gmail::gmail_connect,
             gmail::gmail_disconnect,

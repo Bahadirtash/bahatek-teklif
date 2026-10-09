@@ -28,6 +28,7 @@ export interface OtherAttachment {
   mimeType: string;
   size: number;
   mailId: string;
+  data: Uint8Array;
 }
 
 export interface ParsedMail {
@@ -86,5 +87,6 @@ export interface QuoteRequest {
   /** Hiçbir kaleme eşleşmeyen çizimler (sessizce kaybolmasın). */
   unmatchedDrawings: Drawing[];
   unrecognizedPdfs: OtherAttachment[];
+  otherAttachments: OtherAttachment[];
   warnings: string[];
 }
