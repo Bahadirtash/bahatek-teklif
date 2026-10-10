@@ -1,6 +1,6 @@
 import ExcelJS from "exceljs";
 import type { QuoteRequest } from "./eml";
-import { getPreviousPrice, priceOf } from "./main";
+import { priceOf } from "./main";
 
 export async function fillExcelTemplate(req: QuoteRequest, templateData: Uint8Array, rows: any[]): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook();
@@ -13,8 +13,6 @@ export async function fillExcelTemplate(req: QuoteRequest, templateData: Uint8Ar
   let qtyCol = -1;
   let priceCol = -1;
   let totalCol = -1;
-  let prevPriceCol = -1;
-  let prevDateCol = -1;
 
   ws.eachRow((row, rowNumber) => {
     if (headerRow !== -1) return;
@@ -25,8 +23,6 @@ export async function fillExcelTemplate(req: QuoteRequest, templateData: Uint8Ar
       else if (val.includes("miktar") || val.includes("adet")) qtyCol = colNumber;
       else if (val.includes("birimfiyat") || val.includes("fiyat")) priceCol = colNumber;
       else if (val.includes("toplam") || val.includes("tutar")) totalCol = colNumber;
-      else if (val.includes("öncekifiyat")) prevPriceCol = colNumber;
-      else if (val.includes("öncekitarih")) prevDateCol = colNumber;
     });
     if (foundCode) headerRow = rowNumber;
   });
@@ -44,16 +40,6 @@ export async function fillExcelTemplate(req: QuoteRequest, templateData: Uint8Ar
     totalCol = priceCol + 1;
     const headerCell = ws.getCell(headerRow, totalCol);
     headerCell.value = "Toplam";
-  }
-  if (prevPriceCol === -1) {
-    prevPriceCol = totalCol + 1;
-    const headerCell = ws.getCell(headerRow, prevPriceCol);
-    headerCell.value = "Önceki Fiyat";
-  }
-  if (prevDateCol === -1) {
-    prevDateCol = prevPriceCol + 1;
-    const headerCell = ws.getCell(headerRow, prevDateCol);
-    headerCell.value = "Önceki Tarih";
   }
 
   for (const it of rows) {
@@ -87,22 +73,11 @@ export async function fillExcelTemplate(req: QuoteRequest, templateData: Uint8Ar
         }
         tCell.numFmt = '#,##0.00';
       }
-
-      const prev = getPreviousPrice(req, it.code);
-      const ppCell = row.getCell(prevPriceCol);
-      const pdCell = row.getCell(prevDateCol);
-      if (prev) {
-        ppCell.value = prev.price;
-        ppCell.numFmt = '#,##0.00';
-        pdCell.value = new Date(prev.date).toLocaleDateString("tr-TR");
-      }
     }
   }
 
   ws.getColumn(priceCol).width = 15;
   ws.getColumn(totalCol).width = 15;
-  ws.getColumn(prevPriceCol).width = 15;
-  ws.getColumn(prevDateCol).width = 15;
 
   const buffer = await wb.xlsx.writeBuffer();
   return new Uint8Array(buffer);

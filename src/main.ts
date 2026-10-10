@@ -270,6 +270,21 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
         <h3 style="margin:0">${esc(d.filename)}</h3>
         <div style="display:flex; align-items:center; gap: 16px;">
           <div id="pdf-extra-info"></div>
+          
+          <div id="stock-calc" style="display:flex; align-items:center; gap:8px; background:var(--bg); padding:4px 8px; border-radius:4px; border:1px solid var(--bd);">
+            <input type="text" id="calc-dim" placeholder="Ölçü (örn: 10x20x5)" style="width:110px; font-size:12px; padding:2px 4px;">
+            <select id="calc-mat" style="font-size:12px; padding:2px;">
+              <option value="7.85">Çelik (7.85)</option>
+              <option value="2.7">Alüminyum (2.7)</option>
+              <option value="8.96">Bakır (8.96)</option>
+              <option value="8.4">Pirinç (8.4)</option>
+              <option value="1.2">Kestamid (1.2)</option>
+            </select>
+            <input type="text" id="calc-price" placeholder="B.Fiyat (₺/kg)" inputmode="decimal" style="width:70px; font-size:12px; padding:2px 4px;">
+            <span id="calc-weight" style="font-size:12px; color:#aaa; width:60px; text-align:right;">0.00 kg</span>
+            <span id="calc-res" style="color:var(--ac); font-weight:bold; font-size:13px; min-width:70px; text-align:right;">0,00 ₺</span>
+          </div>
+
           ${prevText}
           ${item && req ? `
           <div id="md-price">
@@ -338,8 +353,57 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
       if (info.material) parts.push(`Cinsi: ${esc(info.material)}`);
       if (info.weight) parts.push(`Ağırlık: ${esc(info.weight)}`);
       el.innerHTML = `<span style="color:#2ecc71; font-weight:600; font-size:14px; margin-right:15px;">${parts.join(" | ")}</span>`;
+      
+      const calcDim = $<HTMLInputElement>("calc-dim");
+      if (calcDim && info.weight && !calcDim.value) {
+          calcDim.value = info.weight; // Optionally auto-fill weight if extracted
+          calcDim.dispatchEvent(new Event("input"));
+      }
     }
   });
+
+  const calcDim = $<HTMLInputElement>("calc-dim");
+  const calcMat = $<HTMLSelectElement>("calc-mat");
+  const calcPrice = $<HTMLInputElement>("calc-price");
+  const calcWeight = $("calc-weight");
+  const calcRes = $("calc-res");
+
+  const calcStock = () => {
+    if (!calcDim || !calcMat || !calcPrice || !calcWeight || !calcRes) return;
+    const dimVal = calcDim.value.toLowerCase().trim();
+    const density = parseFloat(calcMat.value) || 0;
+    const price = parsePrice(calcPrice.value) || 0;
+    
+    let weight = 0;
+    
+    // Parse dimension like 10x20x5 or a direct number
+    if (dimVal) {
+       const dims = dimVal.split("x").map(x => parseFloat(x.trim())).filter(x => !isNaN(x));
+       if (dims.length === 3) {
+           // Example calculation: cm x cm x mm * density / 1000 => roughly kg
+           // Actually, typical volume to weight: mm * mm * mm * density / 1000000 = kg
+           // Let's assume standard mm input for plates: Width x Length x Thickness
+           const vol = dims[0] * dims[1] * dims[2];
+           weight = (vol * density) / 1000000;
+       } else if (dimVal.startsWith("r") && dims.length === 2) {
+           // Cylinder: R(Diameter) x Length (mm)
+           const d = dims[0];
+           const l = dims[1];
+           const vol = Math.PI * Math.pow(d / 2, 2) * l;
+           weight = (vol * density) / 1000000;
+       } else {
+           // Maybe just raw weight inputted
+           weight = parseFloat(dimVal.replace(",", ".")) || 0;
+       }
+    }
+
+    calcWeight.textContent = weight.toFixed(2) + " kg";
+    calcRes.textContent = formatMoney(weight * price) + " ₺";
+  };
+
+  if (calcDim) calcDim.oninput = calcStock;
+  if (calcMat) calcMat.onchange = calcStock;
+  if (calcPrice) calcPrice.oninput = calcStock;
 
   try {
     const page = await renderFullPage(d);
