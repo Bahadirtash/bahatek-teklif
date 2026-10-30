@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { codeKey, drawingKey, groupMails, parseEml } from "../src/eml";
+import { codeKey, drawingKey, groupMails, isItemCode, isMatch, parseEml } from "../src/eml";
 
 // ---------- Sentetik mail üretici ----------
 
@@ -52,6 +52,14 @@ describe("kod ve çizim anahtarı", () => {
     expect(drawingKey("U00314268_B_SHT2 (1).pdf")).toEqual({ key: "00314268_B", sheet: 2 });
     expect(drawingKey("teknik_sartname.pdf")).toEqual({ key: "teknik_sartname", sheet: 1 });
     expect(codeKey("TIA KAPAK")).toBeNull();
+
+    // Yeni FE, FTM ve esnek eşleşme testleri
+    expect(isItemCode("FE026BF3609")).toBe(true);
+    expect(isItemCode("FE026BF3736")).toBe(true);
+    expect(isItemCode("FTM30002337")).toBe(true);
+    expect(isItemCode("FTM30005458")).toBe(true);
+    expect(isMatch("FE026BF3736", "E026BF3736.pdf")).toBe(true);
+    expect(isMatch("FE026BF3736", "BFBY2026.01.306.pdf", "TIA KRSLMA TKZU BFBY2026.01.306_MF")).toBe(true);
   });
 });
 

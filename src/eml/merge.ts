@@ -1,7 +1,7 @@
 // Parçalı mailleri tek teklif isteğinde birleştirir ve çizimleri kalemlere eşleştirir.
 // Konu bazen boş/Fwd olduğundan tek kurala bağlı değil: aynı gönderen + (aynı konu
 // etiketi "(16:00 26.09.2026)" VEYA aynı kalem tablosu VEYA çizimleri tablodaki kalemlere uyan).
-import { codeKey } from "./codes";
+import { codeKey, isMatch } from "./codes";
 import type { Drawing, Item, OtherAttachment, ParsedMail, QuoteRequest } from "./types";
 
 function senderKey(m: ParsedMail): string {
@@ -111,10 +111,12 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
 
   let items: Item[] = [];
   if (table?.rows && table.rows.length > 0) {
+    const descCol = table.headers.findIndex(h => /tan[ıi]m|a[cç][ıi]klama/i.test(h));
     items = table.rows.map((cells, index) => {
       const code = cells[codeCol];
+      const desc = descCol >= 0 ? cells[descCol] : (cells[codeCol + 1] || "");
       const key = codeKey(code);
-      const own = key ? drawings.filter((d) => d.key === key).sort((a, b) => a.sheet - b.sheet) : [];
+      const own = drawings.filter((d) => isMatch(code, d.filename, desc)).sort((a, b) => a.sheet - b.sheet);
       own.forEach((d) => used.add(d));
       const qtyText = qtyCol >= 0 ? cells[qtyCol] : "";
       const qty = /^\d+([.,]\d+)?$/.test(qtyText) ? Number(qtyText.replace(",", ".")) : null;

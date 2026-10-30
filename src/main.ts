@@ -106,7 +106,71 @@ function statusLabel(item: Item): string {
   return item.status === "ready" ? "Çizim var" : item.status === "waiting" ? "Çizim bekleniyor" : "Çizim gelmedi";
 }
 
-// ---------------------------------------------------------------- mail yükleme
+let showOldOffers = false;
+
+function offerExcelFilename(req: QuoteRequest): string {
+  let dtStr = "";
+  if (req.requestTag) {
+    const parts = req.requestTag.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      dtStr = `${parts[1]}_${parts[0].replace(":", ".")}`;
+    } else {
+      dtStr = req.requestTag.replace(":", ".");
+    }
+  } else if (req.date) {
+    try {
+      const d = new Date(req.date);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, "0");
+        const month = String(d.getMonth() + 1).padStart(2, "0");
+        const year = d.getFullYear();
+        const hour = String(d.getHours()).padStart(2, "0");
+        const min = String(d.getMinutes()).padStart(2, "0");
+        dtStr = `${day}.${month}.${year}_${hour}.${min}`;
+      }
+    } catch {}
+  }
+  if (!dtStr) {
+    dtStr = todayDotted();
+  }
+  return `Teklif_${dtStr}.xlsx`;
+}
+
+function initResizableColumns(table: HTMLTableElement): void {
+  const ths = table.querySelectorAll<HTMLTableCellElement>("thead th");
+  ths.forEach((th) => {
+    if (th.querySelector(".col-resizer")) return;
+    const resizer = document.createElement("div");
+    resizer.className = "col-resizer";
+    th.appendChild(resizer);
+
+    let startX = 0;
+    let startWidth = 0;
+
+    const onMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - startX;
+      const newWidth = Math.max(35, startWidth + dx);
+      th.style.width = `${newWidth}px`;
+      th.style.minWidth = `${newWidth}px`;
+    };
+
+    const onMouseUp = () => {
+      resizer.classList.remove("resizing");
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    };
+
+    resizer.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      startX = e.clientX;
+      startWidth = th.offsetWidth;
+      resizer.classList.add("resizing");
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+  });
+}
 
 function regroup(): void {
   state.requests = groupMails([...state.mails.values()]);
@@ -355,8 +419,18 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
       el.innerHTML = `<span style="color:#2ecc71; font-weight:600; font-size:14px; margin-right:15px;">${parts.join(" | ")}</span>`;
       
       const calcDim = $<HTMLInputElement>("calc-dim");
+      const calcMat = $<HTMLSelectElement>("calc-mat");
+      if (calcMat && info.material) {
+        const mUpper = info.material.toUpperCase();
+        if (/AL[UÜ]M|6061|7075|5083/i.test(mUpper)) calcMat.value = "2.7";
+        else if (/BAK[Iİ]R|CU/i.test(mUpper)) calcMat.value = "8.96";
+        else if (/P[Iİ]R[Iİ]N[CÇ]|MS\s*58|BRONZ/i.test(mUpper)) calcMat.value = "8.4";
+        else if (/KESTAM[Iİ]D|DELR[Iİ]N|POM|POL[Iİ]|PTFE|TEFLON/i.test(mUpper)) calcMat.value = "1.2";
+        else if (/AISI|304|316|ST|C45|ÇEL[Iİ]K|1040|4140|1\./i.test(mUpper)) calcMat.value = "7.85";
+      }
+
       if (calcDim && info.weight && !calcDim.value) {
-          calcDim.value = info.weight; // Optionally auto-fill weight if extracted
+          calcDim.value = info.weight;
           calcDim.dispatchEvent(new Event("input"));
       }
     }
@@ -490,6 +564,10 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
 function renderSidebar(): void {
   const groups = new Map<string, { title: string; firm: Firm | null; people: Map<string, QuoteRequest[]> }>();
   for (const f of state.settings.firms) groups.set(f.id, { title: f.name, firm: f, people: new Map() });
+  
+  const now = Date.now();
+  let hiddenOldOffers = 0;
+
   for (const r of state.requests) {
     const key = firmKey(r);
     if (!groups.has(key)) groups.set(key, { title: `${suggestFirmName(r.sender.address, r.sender.name)} (izin listesinde yok)`, firm: null, people: new Map() });
@@ -515,25 +593,69 @@ function renderSidebar(): void {
     for (const [personName, reqs] of sortedPeople) {
        html += `<div style="padding: 4px 8px; font-weight: bold; font-size: 11px; color: var(--ac); margin-top: 4px; border-top: 1px solid var(--bd);">👤 ${esc(personName)}</div>`;
        for (const r of reqs) {
+          const offer = state.offers[r.id];
+          
+          // EBA'dan SİB / SİP / Sipariş mailleri geldiyse otomatik won işaretle
+          const isOrderMail = r.mails.some(m => /\b(?:S[İI]B|S[İI]P|S[İI]PAR[İI][SŞ]|SATINALMA)\b/i.test(m.subject));
+          if (isOrderMail && offer && !offer.result) {
+            offer.result = "won";
+            persist("offers");
+          }
+
+          // 1 günden (24 saat) eski teklifleri varsayılan olarak listeden gizle
+          const isOld = offer && (now - new Date(offer.at).getTime() > 24 * 60 * 60 * 1000);
+          if (isOld && !showOldOffers && r.id !== state.selectedRequest) {
+            hiddenOldOffers++;
+            continue;
+          }
+
+          // Teklif toplam tutarı
+          let offerTotal = 0;
+          for (const it of r.items) {
+            const p = priceOf(r, it);
+            if (p != null && it.qty != null) {
+              offerTotal += p * it.qty;
+            }
+          }
+
           const ready = r.items.filter((i) => i.status === "ready").length;
           const parts = !r.partTotal || !r.partsReceived.length
             ? `${r.mails.length} e-posta${r.partTotal ? ` (${r.partTotal} parçalık istek)` : ""}`
             : r.partsReceived.length >= r.partTotal
               ? `Parça 1–${r.partTotal} birleşti`
               : `Parça ${r.partsReceived.join(", ")} / ${r.partTotal} geldi`;
-          const offer = state.offers[r.id];
+          
           const bits = [parts, `${ready}/${r.items.length} çizim`];
           if (r.deadline) bits.push(`son tarih ${r.deadline.replace(/\.\d{4}/, "")}`);
+          
+          let resultBadge = "";
+          let totalSpan = "";
+          if (offer) {
+            const isWon = offer.result === "won";
+            const isLost = offer.result === "lost";
+            if (offerTotal > 0) {
+              totalSpan = `<span class="${isWon ? "offer-total-won" : isLost ? "offer-total-lost" : ""}" style="font-size:12px;">${formatMoney(offerTotal)} ₺</span>`;
+            }
+            if (isWon) resultBadge = `<span class="badge-won">Kazanıldı</span>`;
+            else if (isLost) resultBadge = `<span class="badge-lost">Kaybedildi</span>`;
+          }
+
           html += `<div class="req ${r.id === state.selectedRequest ? "on" : ""}" data-req="${esc(r.id)}">
             <button class="btn-rm" data-rmreq="${esc(r.id)}" title="Gizle/Sil">×</button>
-            <b>${esc(requestTitle(r))}</b><small>${esc(bits.join(" · "))}</small>
-            ${offer ? `<small class="ok">Teklif hazırlandı ✓</small>
-              <select class="res" data-res="${esc(r.id)}">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+              <b>${esc(requestTitle(r))}</b>
+              ${resultBadge}
+            </div>
+            <small>${esc(bits.join(" · "))}</small>
+            ${offer ? `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:3px;">
+              <small class="ok">Teklif hazırlandı ✓ ${totalSpan}</small>
+              <select class="res ${offer.result === "won" ? "res-won" : offer.result === "lost" ? "res-lost" : ""}" data-res="${esc(r.id)}">
                 <option value="" ${!offer.result ? "selected" : ""}>Sonuç: bekleniyor</option>
                 <option value="won" ${offer.result === "won" ? "selected" : ""}>Kazanıldı</option>
                 <option value="lost" ${offer.result === "lost" ? "selected" : ""}>Kaybedildi</option>
-              </select>` : ""}
-          </div>`;
+              </select>
+            </div>` : ""}`;
+          html += `</div>`;
        }
     }
     
@@ -543,7 +665,24 @@ function renderSidebar(): void {
       html += `<button class="btn sm" data-addfirm="${esc(key)}">Firma olarak ekle</button>`;
     }
   }
+
+  if (hiddenOldOffers > 0 || showOldOffers) {
+    html += `<div style="padding: 8px 12px; font-size: 11px; color: var(--mu); border-top: 1px solid var(--bd); margin-top: 8px;">
+      <label style="cursor: pointer; display: flex; align-items: center; gap: 6px;">
+        <input type="checkbox" id="chk-old-offers" ${showOldOffers ? "checked" : ""}> 1 günden eski teklifleri göster (${hiddenOldOffers} gizli)
+      </label>
+    </div>`;
+  }
+
   $("firms").innerHTML = html;
+  
+  const chkOld = $<HTMLInputElement>("chk-old-offers");
+  if (chkOld) {
+    chkOld.onchange = () => {
+      showOldOffers = chkOld.checked;
+      renderSidebar();
+    };
+  }
   $("arch").textContent = `Arşiv: ${state.settings.archiveRoot}`;
 }
 
@@ -669,6 +808,8 @@ function renderMid(): void {
     removeRequest(req);
   };
   bindTable(req);
+  const table = mid.querySelector<HTMLTableElement>("table");
+  if (table) initResizableColumns(table);
 }
 
 function bindTable(req: QuoteRequest): void {
@@ -963,15 +1104,18 @@ async function prepareOffer(): Promise<void> {
       templateData = templateAtt.data;
     }
     
+    const filename = offerExcelFilename(req);
+
     if (templateData) {
       const { fillExcelTemplate } = await import("./excel");
       const outData = await fillExcelTemplate(req, templateData, rows);
-      path = await backend.saveExcelFile(state.settings.archiveRoot, firm, folder, outData);
+      path = await backend.saveExcelFile(state.settings.archiveRoot, firm, folder, outData, filename);
     } else {
       path = await backend.saveOffer({
         archiveRoot: state.settings.archiveRoot,
         firm,
         folder,
+        filename,
         headers: [...req.headers, "Önceki Fiyat", "Önceki Tarih"],
         qtyCol: req.qtyCol,
         rows: rows.map((it) => {

@@ -20,6 +20,7 @@ pub struct Offer {
     pub firm: String,
     /// "<tarih - konu>" klasör adı; Windows'ta geçersiz karakterler temizlenir.
     pub folder: String,
+    pub filename: Option<String>,
     pub headers: Vec<String>,
     /// Miktar sütununun indeksi; yoksa -1.
     pub qty_col: i32,
@@ -61,10 +62,16 @@ fn col_name(mut col: u16) -> String {
 }
 
 pub fn offer_path(offer: &Offer) -> PathBuf {
+    let raw_fname = offer.filename.as_deref().unwrap_or("teklif.xlsx");
+    let fname = if raw_fname.to_lowercase().ends_with(".xlsx") {
+        format!("{}.xlsx", safe_name(&raw_fname[..raw_fname.len() - 5]))
+    } else {
+        format!("{}.xlsx", safe_name(raw_fname))
+    };
     Path::new(&offer.archive_root)
         .join(safe_name(&offer.firm))
         .join(safe_name(&offer.folder))
-        .join("teklif.xlsx")
+        .join(fname)
 }
 
 pub fn build_xlsx(offer: &Offer, path: &Path) -> Result<(), XlsxError> {
@@ -143,11 +150,17 @@ pub fn save_offer(offer: Offer) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn save_excel_file(archive_root: String, firm: String, folder: String, data: Vec<u8>) -> Result<String, String> {
+pub fn save_excel_file(archive_root: String, firm: String, folder: String, data: Vec<u8>, filename: Option<String>) -> Result<String, String> {
+    let raw_fname = filename.as_deref().unwrap_or("teklif.xlsx");
+    let fname = if raw_fname.to_lowercase().ends_with(".xlsx") {
+        format!("{}.xlsx", safe_name(&raw_fname[..raw_fname.len() - 5]))
+    } else {
+        format!("{}.xlsx", safe_name(raw_fname))
+    };
     let path = Path::new(&archive_root)
         .join(safe_name(&firm))
         .join(safe_name(&folder))
-        .join("teklif.xlsx");
+        .join(fname);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("Klasör oluşturulamadı: {e}"))?;
     }
@@ -155,7 +168,7 @@ pub fn save_excel_file(archive_root: String, firm: String, folder: String, data:
     std::fs::write(&tmp, data).map_err(|e| format!("Excel dosyası yazılamadı: {e}"))?;
     std::fs::rename(&tmp, &path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        format!("teklif.xlsx kaydedilemedi (dosya Excel'de açık olabilir): {e}")
+        format!("Excel dosyası kaydedilemedi (dosya Excel'de açık olabilir): {e}")
     })?;
     Ok(path.to_string_lossy().into_owned())
 }
@@ -181,6 +194,7 @@ mod tests {
                 row("FU00230931-A-03", "TIA TABAN MIL TUTUCU-U00230931/A-MF", "20", Some(12.5)),
                 row("FU00314268/B-03", "TIA KAPAK -U00314268/B-MF", "1", None),
             ],
+            filename: None,
         }
     }
 

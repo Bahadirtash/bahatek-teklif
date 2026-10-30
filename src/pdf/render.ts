@@ -134,6 +134,39 @@ export async function renderFullPage(d: Drawing): Promise<{ url: string; width: 
   });
 }
 
+/** Bilinen endüstriyel malzeme kaliteleri ve standartları */
+const KNOWN_MATERIALS = [
+  /\b(AISI\s*\d{3}[A-Z]*)\b/i,
+  /\b(1\.\d{4})\b/i,
+  /\b(St\s*-?\s*\d{2}(?:-\d)?)\b/i,
+  /\b(C\s*-?\s*\d{2})\b/i,
+  /\b(Ç\s*-?\s*\d{4})\b/i,
+  /\b(4140|1040|4340|2379|2083)\b/i,
+  /\b(Al[uü]minyum(?:\s*\d{4})?|6061|6082|7075|5083)\b/i,
+  /\b(Pirin[cç]|Ms\s*58|Bak[ıi]r|Bronz)\b/i,
+  /\b(Kestamid|Delrin|POM|Poliasetal|PTFE|Teflon|Polietilen|PE\s*1000|Poliamid|PA\s*6)\b/i,
+  /\b([0-9A-Z]{2,10}\s+Kalite)\b/i,
+];
+
+const MATERIAL_BLACKLIST = [
+  "çizen", "cizen", "kontrol", "tarih", "ölçek", "olcek", "resim", "sayfa",
+  "revizyon", "rev", "gıda", "gida", "bisküvi", "biskuvi", "makina", "makine",
+  "adet", "parça", "parca", "no", "imza", "onay", "teknik", "destek", "mevlüt",
+  "mevlut", "yersel", "şirket", "etiket", "tolerans", "açıklama", "aciklama"
+];
+
+function isCleanMaterial(val?: string): boolean {
+  if (!val) return false;
+  const lower = val.toLowerCase().trim();
+  if (lower.length < 2 || lower.length > 35) return false;
+  for (const bl of MATERIAL_BLACKLIST) {
+    if (lower === bl || lower.startsWith(bl + " ") || lower.endsWith(" " + bl)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** PDF içindeki antet kısmından Malzeme cinsi ve Ağırlığı okumaya çalışır. */
 export async function extractPdfInfo(d: Drawing): Promise<{ material?: string; weight?: string }> {
   try {
@@ -150,42 +183,86 @@ export async function extractPdfInfo(d: Drawing): Promise<{ material?: string; w
         rawItems = content.items.map((s: any) => s.str.trim()).filter(Boolean);
         text = rawItems.join(" ");
       } catch (err) {
-        // Hata olursa (bozuk PDF vs.) fallback'e geçer
+        // Vektör okunamazsa OCR'a geçilir
       }
     }
 
-    if (isImage || !text.trim()) {
-      // Metin yoksa veya resimse OCR ile okuma yap (Tesseract)
-      const { canvas } = await renderPageCanvas(d, 16e6, 3.5);
-      const url = canvas.toDataURL("image/jpeg", 0.9);
-      const { data } = await Tesseract.recognize(url, 'tur+eng');
-      text = data.text;
-    }
-
+    // Doğrudan metinde bilinen malzeme var mı kontrol et
     let material: string | undefined;
     let weight: string | undefined;
-    
-    const matMatch = text.match(/(?:malzeme(?:si)?|cinsi?|material)[\s:]*([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)*)/i);
-    if (matMatch) material = matMatch[1].trim();
 
+    for (const pat of KNOWN_MATERIALS) {
+      const m = text.match(pat);
+      if (m && isCleanMaterial(m[1])) {
+        material = m[1].toUpperCase().replace(/\s+/g, " ").trim();
+        break;
+      }
+    }
+
+    // Ağırlık kontrolü
     const wMatch = text.match(/(?:ağırlık|ağırlığı|weight)[\s:]*([0-9.,]+\s*(?:kg|gr|g)?)/i);
     if (wMatch) weight = wMatch[1].trim();
 
-    if ((!material || !weight) && rawItems.length > 0) {
-      for (let i = 0; i < rawItems.length; i++) {
-        const lower = rawItems[i].toLowerCase();
-        if (!material && (lower.includes('malzeme') || lower.includes('cinsi') || lower.includes('material'))) {
-          const parts = rawItems[i].split(':');
-          if (parts.length > 1 && parts[1].trim()) material = parts[1].trim();
-          else if (i + 1 < rawItems.length) material = rawItems[i+1];
-        }
-        if (!weight && (lower.includes('ağırlık') || lower.includes('ağırlığı') || lower.includes('weight'))) {
-          const parts = rawItems[i].split(':');
-          if (parts.length > 1 && parts[1].trim()) weight = parts[1].trim();
-          else if (i + 1 < rawItems.length) weight = rawItems[i+1];
+    // Eğer henüz bulunamadıysa antet odaklı OCR yap
+    if (!material || isImage || !text.trim()) {
+      const { canvas } = await renderPageCanvas(d, 16e6, 3.5);
+      
+      // Antet genellikle sağ alt köşededir; sağ alt %45 genişlik ve %30 yükseklik alanını kırp
+      const antetW = Math.round(canvas.width * 0.45);
+      const antetH = Math.round(canvas.height * 0.30);
+      const antetX = canvas.width - antetW;
+      const antetY = canvas.height - antetH;
+
+      const antetCanvas = document.createElement("canvas");
+      antetCanvas.width = antetW;
+      antetCanvas.height = antetH;
+      const actx = antetCanvas.getContext("2d")!;
+      actx.drawImage(canvas, antetX, antetY, antetW, antetH, 0, 0, antetW, antetH);
+
+      const antetUrl = antetCanvas.toDataURL("image/jpeg", 0.95);
+      const { data } = await Tesseract.recognize(antetUrl, 'tur+eng');
+      const ocrText = data.text;
+
+      // 1. OCR metninde bilinen malzeme var mı?
+      for (const pat of KNOWN_MATERIALS) {
+        const m = ocrText.match(pat);
+        if (m && isCleanMaterial(m[1])) {
+          material = m[1].toUpperCase().replace(/\s+/g, " ").trim();
+          break;
         }
       }
+
+      // 2. Malzeme: ... şeklinde geçiyor mu?
+      if (!material) {
+        const mLines = ocrText.split(/\r?\n/);
+        for (let i = 0; i < mLines.length; i++) {
+          const line = mLines[i];
+          const mRegex = /(?:malzeme(?:si)?|material)[\s:]*([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)*)/i;
+          const match = line.match(mRegex);
+          if (match && isCleanMaterial(match[1])) {
+            material = match[1].trim();
+            break;
+          }
+          if (/malzeme/i.test(line) && i + 1 < mLines.length) {
+            const nextCandidate = mLines[i + 1].trim();
+            if (isCleanMaterial(nextCandidate)) {
+              material = nextCandidate;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!weight) {
+        const owMatch = ocrText.match(/(?:ağırlık|ağırlığı|weight)[\s:]*([0-9.,]+\s*(?:kg|gr|g)?)/i);
+        if (owMatch) weight = owMatch[1].trim();
+      }
     }
+
+    if (!isCleanMaterial(material)) {
+      material = undefined;
+    }
+
     return { material, weight };
   } catch (e) {
     console.error("Text extraction failed", e);
