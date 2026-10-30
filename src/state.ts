@@ -16,6 +16,7 @@ export interface Settings {
   fullList: Record<string, boolean>;
   gmailAccount: string | null;
   gmailDays: number;
+  gmailOrderDays: number;
   autostartInitialized: boolean;
 }
 
@@ -53,7 +54,8 @@ export async function loadState(): Promise<void> {
     firms: s?.firms ?? [],
     fullList: s?.fullList ?? {},
     gmailAccount: s?.gmailAccount ?? null,
-    gmailDays: s?.gmailDays ?? 30,
+    gmailDays: s?.gmailDays ?? 3,
+    gmailOrderDays: s?.gmailOrderDays ?? 30,
     autostartInitialized: s?.autostartInitialized ?? false,
   };
   state.prices = (await storeRead<Prices>("prices")) ?? {};

@@ -173,7 +173,7 @@ function buildRequest(group: ParsedMail[]): QuoteRequest {
         if (codeCol >= 0) newCells[codeCol] = key;
         else newCells[0] = key;
         const descCol = codeCol === 0 ? 1 : 0;
-        newCells[descCol] = "Tabloda eşleşmedi, ekten eklendi";
+        newCells[descCol] = "Ek Çizim";
         if (qtyCol >= 0) newCells[qtyCol] = "1";
 
         items.push({

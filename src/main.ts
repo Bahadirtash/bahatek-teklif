@@ -1,6 +1,7 @@
 // Bahatek Teklif arayüzü — prototype/teklif-prototip.html görünümü ve akışı, gerçek veriyle.
 import * as backend from "./backend";
 import { groupMails, parseEml } from "./eml";
+import { normalizeCodeStr } from "./eml/codes";
 import type { Drawing, Item, QuoteRequest } from "./eml";
 import { cleanSubject, dayOf, esc, formatMoney, gmailComposeUrl, parsePrice, todayDotted } from "./format";
 import { renderCrop, renderFullPage, extractPdfInfo } from "./pdf/render";
@@ -170,7 +171,7 @@ function hideColumn(name: string): void {
   renderMid();
 }
 
-function showColumns(names: string[]): void {
+export function showColumns(names: string[]): void {
   hiddenCols = hiddenCols.filter((h) => !names.includes(h));
   saveColState();
   renderMid();
@@ -373,9 +374,14 @@ let gmailLast = "";
 
 function gmailQuery(): string {
   const rules = state.settings.firms.flatMap((f) => f.match).map((m) => m.trim()).filter(Boolean);
-  const since = `newer_than:${Math.max(1, state.settings.gmailDays)}d`;
+  const since = `newer_than:${Math.max(1, state.settings.gmailDays || 3)}d`;
   // İzin listesi boşsa ilk kurulum: konusunda "teklif" geçenler, firma eklenebilsin diye.
   return rules.length ? `from:(${rules.join(" OR ")}) ${since}` : `subject:teklif ${since}`;
+}
+
+function gmailOrderQuery(): string {
+  const days = Math.max(1, state.settings.gmailOrderDays || 30);
+  return `(subject:(SİP OR SİB OR Sipariş OR "Açık Sipariş" OR SATINALMA OR KAZANILDI OR "iptal parça" OR SIPARIS) OR from:(*eba* OR *siparis*)) newer_than:${days}d`;
 }
 
 async function gmailRefresh(silent = false): Promise<void> {
@@ -383,7 +389,15 @@ async function gmailRefresh(silent = false): Promise<void> {
   gmailBusy = true;
   renderGmailBox();
   try {
-    const refs = await backend.gmailList(gmailQuery(), 60);
+    // 1. Ağır teklif istekleri (Tuğçe vb.) — kısa gün aralığı (RAM şişmesini önler)
+    const quoteRefs = await backend.gmailList(gmailQuery(), 60);
+    // 2. Hafif sipariş/SİP/EBA mailleri — geniş gün aralığı (30-45 gün, kazanıldı/kaybedildi için)
+    const orderRefs = await backend.gmailList(gmailOrderQuery(), 60);
+
+    const map = new Map<string, { id: string }>();
+    for (const r of [...quoteRefs, ...orderRefs]) map.set(r.id, r);
+    const refs = Array.from(map.values());
+
     const fresh = refs.filter((r) => !state.mails.has(`gmail:${r.id}`));
     let n = 0;
     for (const r of fresh) {
@@ -441,6 +455,98 @@ function renderGmailBox(): void {
   $("gref").onclick = () => gmailRefresh();
 }
 
+// ---------------------------------------------------------------- Talaşlı İmalat Hammadde Hesaplayıcı
+
+interface MaterialDef {
+  name: string;
+  density: number;
+}
+
+const MATERIALS_LIST: MaterialDef[] = [
+  { name: "İmalat Çeliği (1040 / 1050 / St52)", density: 7.85 },
+  { name: "Islah / Takım Çeliği (4140 / 4340 / 2379)", density: 7.85 },
+  { name: "Paslanmaz Çelik (304 / 316)", density: 7.93 },
+  { name: "Paslanmaz Çelik (420 / 430)", density: 7.75 },
+  { name: "Alüminyum (6061 / 7075 / 5083)", density: 2.70 },
+  { name: "Pirinç / Otomat (Ms58)", density: 8.45 },
+  { name: "Bronz / Fosfor Bronz", density: 8.80 },
+  { name: "Bakır (Elektrolitik Saf)", density: 8.96 },
+  { name: "Döküm (Pik / GG25 - Sfero / GGG40)", density: 7.20 },
+  { name: "Kestamid / Poliamid (PA6)", density: 1.15 },
+  { name: "Delrin / POM (Asetal)", density: 1.41 },
+  { name: "Teflon / PTFE", density: 2.20 },
+  { name: "Polietilen (PE1000 / PE500)", density: 0.95 },
+  { name: "Titanyum (Grade 2 / Grade 5)", density: 4.50 },
+];
+
+const stockCalcState = {
+  shape: "plate" as "plate" | "round",
+  density: "7.85",
+  pricePerKg: "",
+};
+
+function materialOptionsHtml(currentDensity: string): string {
+  let matched = false;
+  const curNum = parseFloat(currentDensity.replace(",", "."));
+  const opts = MATERIALS_LIST.map((m) => {
+    const valStr = m.density.toFixed(2);
+    const isMatch = !isNaN(curNum) && Math.abs(m.density - curNum) < 0.02;
+    const sel = isMatch && !matched ? " selected" : "";
+    if (sel) matched = true;
+    return `<option value="${valStr}"${sel}>${m.name} (${valStr})</option>`;
+  });
+  opts.push(`<option value="custom"${!matched ? " selected" : ""}>Özel Malzeme / Serbest...</option>`);
+  return opts.join("");
+}
+
+function detectMaterialDensity(materialName: string): string {
+  const m = materialName.toUpperCase();
+  if (/AL[UÜ]M|6061|7075|5083|ALMG/i.test(m)) return "2.70";
+  if (/BAK[Iİ]R|CU\b|ECU/i.test(m)) return "8.96";
+  if (/P[Iİ]R[Iİ]N[CÇ]|MS\s*58|CW614N|CW617N/i.test(m)) return "8.45";
+  if (/BRONZ|RG5|RG7|CUSN/i.test(m)) return "8.80";
+  if (/DELR[Iİ]N|POM/i.test(m)) return "1.41";
+  if (/KESTAM[Iİ]D|POL[Iİ]AM[Iİ]D|PA\s*6/i.test(m)) return "1.15";
+  if (/TEFLON|PTFE/i.test(m)) return "2.20";
+  if (/POL[Iİ]ET[Iİ]LEN|PE\s*1000|PE\s*500/i.test(m)) return "0.95";
+  if (/T[Iİ]TAN/i.test(m)) return "4.50";
+  if (/420|430|1\.4021|1\.4034/i.test(m)) return "7.75";
+  if (/304|316|PASLANMAZ|INOX|1\.4301|1\.4404/i.test(m)) return "7.93";
+  if (/D[OÖ]K[UÜ]M|PIK|GG|GGG|SFERO/i.test(m)) return "7.20";
+  if (/4140|4340|2379|ISLAH|TAKIM|1\.7225/i.test(m)) return "7.85";
+  return "7.85";
+}
+
+function computeStockWeight(shape: "plate" | "round", dimStr: string, density: number): number {
+  if (!dimStr) return 0;
+  const clean = dimStr.replace(/,/g, ".").replace(/Ø|ø|dia|d/gi, " ").trim();
+  const parts = clean.split(/[xX* \t]+/).map((x) => parseFloat(x.trim())).filter((x) => !isNaN(x) && x > 0);
+  if (parts.length === 0) return 0;
+
+  if (shape === "round") {
+    // Silindirik / Çap / Yuvarlak Mil: Çap D x Boy L (mm)
+    if (parts.length >= 2) {
+      const d = parts[0];
+      const l = parts[1];
+      const r = d / 2;
+      const vol = Math.PI * r * r * l; // mm^3
+      return (vol * density) / 1000000;
+    } else {
+      return parts[0]; // Tek sayı girildiyse doğrudan kg
+    }
+  } else {
+    // Kütük / Levha / Lama: En x Boy x Kalınlık (mm)
+    if (parts.length >= 3) {
+      const vol = parts[0] * parts[1] * parts[2]; // mm^3
+      return (vol * density) / 1000000;
+    } else if (parts.length === 2) {
+      return (parts[0] * parts[1] * density) / 1000000;
+    } else {
+      return parts[0]; // Tek sayı girildiyse doğrudan kg
+    }
+  }
+}
+
 // ---------------------------------------------------------------- çizim
 
 let prefetchToken = 0;
@@ -469,18 +575,27 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
         <div style="display:flex; align-items:center; gap: 16px;">
           <div id="pdf-extra-info"></div>
           
-          <div id="stock-calc" style="display:flex; align-items:center; gap:8px; background:var(--bg); padding:4px 8px; border-radius:4px; border:1px solid var(--bd);">
-            <input type="text" id="calc-dim" placeholder="Ölçü (örn: 10x20x5)" style="width:110px; font-size:12px; padding:2px 4px;">
-            <select id="calc-mat" style="font-size:12px; padding:2px;">
-              <option value="7.85">Çelik (7.85)</option>
-              <option value="2.7">Alüminyum (2.7)</option>
-              <option value="8.96">Bakır (8.96)</option>
-              <option value="8.4">Pirinç (8.4)</option>
-              <option value="1.2">Kestamid (1.2)</option>
+          <div id="stock-calc" style="display:flex; align-items:center; gap:6px; background:var(--bg); padding:4px 8px; border-radius:6px; border:1px solid var(--bd); flex-wrap:wrap;">
+            <select id="calc-shape" style="font-size:11.5px; padding:3px 5px; font-weight:600; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+              <option value="plate"${stockCalcState.shape === "plate" ? " selected" : ""}>⬛ Kütük / Levha</option>
+              <option value="round"${stockCalcState.shape === "round" ? " selected" : ""}>⚪ Silindirik / Çap</option>
             </select>
-            <input type="text" id="calc-price" placeholder="B.Fiyat (₺/kg)" inputmode="decimal" style="width:70px; font-size:12px; padding:2px 4px;">
-            <span id="calc-weight" style="font-size:12px; color:#aaa; width:60px; text-align:right;">0.00 kg</span>
-            <span id="calc-res" style="color:var(--ac); font-weight:bold; font-size:13px; min-width:70px; text-align:right;">0,00 ₺</span>
+
+            <select id="calc-mat" style="font-size:11.5px; padding:3px 5px; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+              ${materialOptionsHtml(stockCalcState.density)}
+            </select>
+
+            <input type="text" id="calc-density" value="${stockCalcState.density}" title="Özgül Ağırlık (g/cm³)" style="width:48px; font-size:11.5px; padding:3px 4px; text-align:center; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);" placeholder="Özgül">
+
+            <input type="text" id="calc-dim" placeholder="${stockCalcState.shape === "round" ? "Çap Ø x Boy (örn: 50x150)" : "En x Boy x Kalınlık (örn: 100x200x20)"}" style="width:175px; font-size:11.5px; padding:3px 6px; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);" title="Ölçüler (mm)">
+
+            <input type="text" id="calc-price" value="${stockCalcState.pricePerKg}" placeholder="₺/kg" inputmode="decimal" style="width:65px; font-size:11.5px; padding:3px 4px; text-align:right; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);" title="Birim Fiyat (₺/kg)">
+
+            <span id="calc-weight" style="font-size:12px; font-weight:600; color:var(--tx); min-width:65px; text-align:right;">0.00 kg</span>
+
+            <span id="calc-res" style="color:#2ecc71; font-weight:bold; font-size:13px; min-width:75px; text-align:right;">0,00 ₺</span>
+
+            <button class="btn sm" id="btn-apply-calc" title="Hesaplanan malzeme maliyetini teklif fiyatına kopyala" style="font-size:11px; padding:3px 8px; background:var(--ac); color:#fff; border:none; border-radius:4px; cursor:pointer;">Fiyata Aktar ↵</button>
           </div>
 
           ${prevText}
@@ -525,7 +640,7 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
           const p = parsePrice(pInput.value);
           if (p != null && p > 0) pInput.value = formatMoney(p);
           setPrice(req, item, pInput.value);
-          renderMid(); // re-render bubbles to show new price
+          renderMid();
           renderFooter();
 
           const next = document.querySelector<HTMLInputElement>(`input[data-i="${item.index + 1}"]`);
@@ -544,74 +659,107 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
     }
   }
 
-  extractPdfInfo(d).then(info => {
+  const calcShape = $<HTMLSelectElement>("calc-shape");
+  const calcMat = $<HTMLSelectElement>("calc-mat");
+  const calcDensity = $<HTMLInputElement>("calc-density");
+  const calcDim = $<HTMLInputElement>("calc-dim");
+  const calcPrice = $<HTMLInputElement>("calc-price");
+  const calcWeight = $("calc-weight");
+  const calcRes = $("calc-res");
+  const btnApplyCalc = $("btn-apply-calc");
+
+  const calcStock = () => {
+    if (!calcDim || !calcDensity || !calcPrice || !calcWeight || !calcRes) return 0;
+    const shape = (calcShape?.value || stockCalcState.shape) as "plate" | "round";
+    stockCalcState.shape = shape;
+    const density = parseFloat(calcDensity.value.replace(",", ".")) || 7.85;
+    stockCalcState.density = calcDensity.value;
+    stockCalcState.pricePerKg = calcPrice.value;
+    const price = parsePrice(calcPrice.value) || 0;
+
+    const weight = computeStockWeight(shape, calcDim.value, density);
+    calcWeight.textContent = weight.toFixed(2) + " kg";
+    const totalCost = weight * price;
+    calcRes.textContent = formatMoney(totalCost) + " ₺";
+    return totalCost;
+  };
+
+  extractPdfInfo(d).then((info) => {
     const el = document.getElementById("pdf-extra-info");
     if (el && (info.material || info.weight)) {
       const parts = [];
       if (info.material) parts.push(`Cinsi: ${esc(info.material)}`);
       if (info.weight) parts.push(`Ağırlık: ${esc(info.weight)}`);
       el.innerHTML = `<span style="color:#2ecc71; font-weight:600; font-size:14px; margin-right:15px;">${parts.join(" | ")}</span>`;
-      
-      const calcDim = $<HTMLInputElement>("calc-dim");
-      const calcMat = $<HTMLSelectElement>("calc-mat");
-      if (calcMat && info.material) {
-        const mUpper = info.material.toUpperCase();
-        if (/AL[UÜ]M|6061|7075|5083/i.test(mUpper)) calcMat.value = "2.7";
-        else if (/BAK[Iİ]R|CU/i.test(mUpper)) calcMat.value = "8.96";
-        else if (/P[Iİ]R[Iİ]N[CÇ]|MS\s*58|BRONZ/i.test(mUpper)) calcMat.value = "8.4";
-        else if (/KESTAM[Iİ]D|DELR[Iİ]N|POM|POL[Iİ]|PTFE|TEFLON/i.test(mUpper)) calcMat.value = "1.2";
-        else if (/AISI|304|316|ST|C45|ÇEL[Iİ]K|1040|4140|1\./i.test(mUpper)) calcMat.value = "7.85";
+
+      if (info.material && calcDensity && calcMat) {
+        const dVal = detectMaterialDensity(info.material);
+        calcDensity.value = dVal;
+        stockCalcState.density = dVal;
+        const curNum = parseFloat(dVal);
+        const match = MATERIALS_LIST.find((m) => Math.abs(m.density - curNum) < 0.02);
+        if (match) calcMat.value = match.density.toFixed(2);
+        else calcMat.value = "custom";
       }
 
       if (calcDim && info.weight && !calcDim.value) {
-          calcDim.value = info.weight;
-          calcDim.dispatchEvent(new Event("input"));
+        calcDim.value = info.weight;
       }
+      calcStock();
     }
-  });
+  }).catch(() => {});
 
-  const calcDim = $<HTMLInputElement>("calc-dim");
-  const calcMat = $<HTMLSelectElement>("calc-mat");
-  const calcPrice = $<HTMLInputElement>("calc-price");
-  const calcWeight = $("calc-weight");
-  const calcRes = $("calc-res");
+  if (calcShape) {
+    calcShape.onchange = () => {
+      stockCalcState.shape = calcShape.value as "plate" | "round";
+      if (calcDim) {
+        calcDim.placeholder = calcShape.value === "round"
+          ? "Çap Ø x Boy (örn: 50x150)"
+          : "En x Boy x Kalınlık (örn: 100x200x20)";
+      }
+      calcStock();
+    };
+  }
 
-  const calcStock = () => {
-    if (!calcDim || !calcMat || !calcPrice || !calcWeight || !calcRes) return;
-    const dimVal = calcDim.value.toLowerCase().trim();
-    const density = parseFloat(calcMat.value) || 0;
-    const price = parsePrice(calcPrice.value) || 0;
-    
-    let weight = 0;
-    
-    // Parse dimension like 10x20x5 or a direct number
-    if (dimVal) {
-       const dims = dimVal.split("x").map(x => parseFloat(x.trim())).filter(x => !isNaN(x));
-       if (dims.length === 3) {
-           // Example calculation: cm x cm x mm * density / 1000 => roughly kg
-           // Actually, typical volume to weight: mm * mm * mm * density / 1000000 = kg
-           // Let's assume standard mm input for plates: Width x Length x Thickness
-           const vol = dims[0] * dims[1] * dims[2];
-           weight = (vol * density) / 1000000;
-       } else if (dimVal.startsWith("r") && dims.length === 2) {
-           // Cylinder: R(Diameter) x Length (mm)
-           const d = dims[0];
-           const l = dims[1];
-           const vol = Math.PI * Math.pow(d / 2, 2) * l;
-           weight = (vol * density) / 1000000;
-       } else {
-           // Maybe just raw weight inputted
-           weight = parseFloat(dimVal.replace(",", ".")) || 0;
-       }
-    }
+  if (calcMat) {
+    calcMat.onchange = () => {
+      if (calcMat.value !== "custom" && calcDensity) {
+        calcDensity.value = calcMat.value;
+        stockCalcState.density = calcMat.value;
+      }
+      calcStock();
+    };
+  }
 
-    calcWeight.textContent = weight.toFixed(2) + " kg";
-    calcRes.textContent = formatMoney(weight * price) + " ₺";
-  };
+  if (calcDensity) {
+    calcDensity.oninput = () => {
+      stockCalcState.density = calcDensity.value;
+      if (calcMat) {
+        const curNum = parseFloat(calcDensity.value.replace(",", "."));
+        const match = MATERIALS_LIST.find((m) => !isNaN(curNum) && Math.abs(m.density - curNum) < 0.02);
+        if (match) calcMat.value = match.density.toFixed(2);
+        else calcMat.value = "custom";
+      }
+      calcStock();
+    };
+  }
 
   if (calcDim) calcDim.oninput = calcStock;
-  if (calcMat) calcMat.onchange = calcStock;
   if (calcPrice) calcPrice.oninput = calcStock;
+
+  if (btnApplyCalc) {
+    btnApplyCalc.onclick = () => {
+      const cost = calcStock() || 0;
+      if (cost > 0) {
+        const pInput = $<HTMLInputElement>("pdf-price");
+        if (pInput) {
+          pInput.value = formatMoney(cost);
+          pInput.dispatchEvent(new Event("input"));
+          pInput.focus();
+        }
+      }
+    };
+  }
 
   try {
     const page = await renderFullPage(d);
@@ -695,12 +843,42 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
 
 // ---------------------------------------------------------------- sol bölme
 
+/** Tüm sipariş maillerinden (SİP, SİB, Açık Sipariş Sorgusu vb.) geçen parça kodları havuzu */
+function getOrderedCodesPool(): Set<string> {
+  const pool = new Set<string>();
+  for (const r of state.requests) {
+    const isOrderReq = r.mails.some(m => ORDER_RE.test(m.subject));
+    if (isOrderReq) {
+      for (const it of r.items) {
+        if (it.code) {
+          pool.add(normalizeCodeStr(it.code));
+          const nums = it.code.match(/\b\d{5,12}\b/g);
+          if (nums) nums.forEach(n => pool.add(n));
+        }
+      }
+      for (const m of r.mails) {
+        let text = m.subject.toUpperCase();
+        if (m.table) {
+          for (const row of m.table.rows) {
+            text += " " + row.join(" ");
+          }
+        }
+        for (const num of text.matchAll(/\b\d{5,10}\b/g)) {
+          pool.add(num[0]);
+        }
+      }
+    }
+  }
+  return pool;
+}
+
 function renderSidebar(): void {
   const groups = new Map<string, { title: string; firm: Firm | null; people: Map<string, QuoteRequest[]> }>();
   for (const f of state.settings.firms) groups.set(f.id, { title: f.name, firm: f, people: new Map() });
   
   const now = Date.now();
   let hiddenOldOffers = 0;
+  const orderedCodes = getOrderedCodesPool();
 
   for (const r of state.requests) {
     const key = firmKey(r);
@@ -729,15 +907,22 @@ function renderSidebar(): void {
        for (const r of reqs) {
           const offer = state.offers[r.id];
           
-          // EBA'dan SİB / SİP / Sipariş mailleri geldiyse otomatik won işaretle
-          // Not: JS \b Türkçe harflerde (İ, Ş) çalışmaz; Unicode sınırı kullanılıyor.
-          const isOrderMail = r.mails.some(m => ORDER_RE.test(m.subject));
-          if (isOrderMail && offer && !offer.result) {
+          // EBA'dan veya Tuğçe'den gelen SİP / SİB / Açık Sipariş Sorgusu maillerinde bu parçalar var mı?
+          const isDirectOrderMail = r.mails.some(m => ORDER_RE.test(m.subject));
+          const hasMatchingOrder = r.items.some(it => {
+            const norm = normalizeCodeStr(it.code);
+            if (orderedCodes.has(norm)) return true;
+            const nums = it.code.match(/\b\d{5,12}\b/g);
+            return nums ? nums.some(n => orderedCodes.has(n)) : false;
+          });
+
+          if ((isDirectOrderMail || hasMatchingOrder) && offer && !offer.result) {
             offer.result = "won";
             persist("offers");
           }
 
-          // 1 günden (24 saat) eski teklifleri varsayılan olarak listeden gizle
+          // KULLANICI KURALI: Teklifi henüz VERİLMEMİŞ (hazırlanmamış) mailler ASLA gizlenmez!
+          // Sadece teklifi verilmiş ve üzerinden 24 saat geçmişler onay kutusuyla gizlenebilir.
           const isOld = offer && (now - new Date(offer.at).getTime() > 24 * 60 * 60 * 1000);
           if (isOld && !showOldOffers && r.id !== state.selectedRequest) {
             hiddenOldOffers++;
@@ -771,8 +956,8 @@ function renderSidebar(): void {
             if (offerTotal > 0) {
               totalSpan = `<span class="${isWon ? "offer-total-won" : isLost ? "offer-total-lost" : ""}" style="font-size:12px;">${formatMoney(offerTotal)} ₺</span>`;
             }
-            if (isWon) resultBadge = `<span class="badge-won">Kazanıldı</span>`;
-            else if (isLost) resultBadge = `<span class="badge-lost">Kaybedildi</span>`;
+            if (isWon) resultBadge = `<span class="badge-won">✅ Kazanıldı</span>`;
+            else if (isLost) resultBadge = `<span class="badge-lost">❌ Kaybedildi</span>`;
           }
 
           const band = offer?.result === "won" ? "won" : offer?.result === "lost" ? "lost" : "";
@@ -894,7 +1079,6 @@ function renderMid(): void {
   const dc = descCol(req);
   // Gizlenen sütunlar (başlık adına göre, tüm isteklerde geçerli)
   const visible = req.headers.map((_, c) => c).filter((c) => !hiddenCols.includes(req.headers[c]));
-  const hiddenHere = req.headers.filter((h) => hiddenCols.includes(h));
   const head = visible.map((c) => {
     const h = req.headers[c];
     return `<th class="${c === qc ? "n" : ""}" data-col="${esc(h)}" data-hideable="1" title="${esc(h)} — sağ tık: gizle"><span class="th-l">${esc(h)}</span><button class="th-x" data-hide="${esc(h)}" title="Sütunu gizle">×</button></th>`;
@@ -934,13 +1118,32 @@ function renderMid(): void {
 
   const src = req.mails.map((m) => (m.forwardedBy ? `${m.sender.address} (ileten: ${m.forwardedBy.address})` : m.sender.address));
   const twCls = offer?.result === "won" ? "won" : offer?.result === "lost" ? "lost" : "";
-  const showBtn = hiddenHere.length
-    ? `<button class="btn sm" id="showcols" title="${esc(hiddenHere.join(", "))}">Sütunları göster (${hiddenHere.length} gizli)</button>`
-    : "";
-  mid.innerHTML = `<div class="sumbar ${twCls}"><div class="sum-in" id="sumbar">${summaryHtml(req)}</div>${showBtn}</div>
+  mid.innerHTML = `<div class="sumbar ${twCls}">
+      <div class="sum-in" id="sumbar">${summaryHtml(req)}</div>
+      <div style="position:relative; display:inline-block;">
+        <button class="btn sm" id="btn-col-toggle" style="display:flex; align-items:center; gap:5px; font-weight:600;">
+          ⚙ Sütunlar ${hiddenCols.length ? `(${hiddenCols.length} gizli)` : ""}
+        </button>
+        <div id="col-menu-dropdown" style="display:none; position:absolute; right:0; top:calc(100% + 5px); background:var(--pn); border:1px solid var(--bd); border-radius:6px; box-shadow:0 8px 24px rgba(0,0,0,0.3); z-index:100; min-width:210px; padding:8px;">
+          <div style="font-weight:700; font-size:11px; margin-bottom:6px; border-bottom:1px solid var(--bd); padding-bottom:4px; color:var(--mu); text-transform:uppercase;">Sütun Göster / Gizle</div>
+          <div style="max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:4px;">
+            ${req.headers.map(h => `
+              <label style="display:flex; align-items:center; gap:8px; padding:3px 6px; border-radius:4px; cursor:pointer; font-size:11.5px; user-select:none; background:var(--bg);">
+                <input type="checkbox" class="col-chk-input" data-col="${esc(h)}" ${!hiddenCols.includes(h) ? "checked" : ""}>
+                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(h)}</span>
+              </label>
+            `).join("")}
+          </div>
+          <div style="border-top:1px solid var(--bd); margin-top:8px; padding-top:6px; display:flex; justify-content:space-between; gap:6px;">
+            <button class="btn sm" id="btn-col-reset" style="font-size:11px; padding:2px 8px;">Tümünü Aç</button>
+            <button class="btn sm" id="btn-col-close" style="font-size:11px; padding:2px 8px;">Kapat</button>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="tw ${twCls}"><table><thead><tr>${head}<th class="n new stk stk-first" data-stk="2" data-col="__prev">Önceki</th><th class="n new stk" data-stk="1" data-col="__price">Birim Fiyat</th><th class="n new stk" data-stk="0" data-col="__total">Toplam</th></tr></thead>
     <tbody id="tb">${rows}</tbody></table></div>
-    <p class="mu">Satırın üzerine gelince çizim önizlemesi açılır, tıklayınca sağda büyür.</p>
+    <p class="mu">Satırın üzerine gelince sağda çizim önizlemesi büyür, çift tıkla tam ekran açılır.</p>
     ${notes.map((n) => `<div class="note">${n}</div>`).join("")}
     <p class="mu">Gönderen: ${esc([...new Set(src)].join(", "))} · <a href="#" id="rm">Bu isteği listeden kaldır</a></p>`;
 
@@ -949,8 +1152,51 @@ function renderMid(): void {
     e.preventDefault();
     removeRequest(req);
   };
-  const sc = $("showcols");
-  if (sc) sc.onclick = () => showColumns(hiddenHere);
+  
+  // Sütun Checkbox Dropdown Olayları
+  const btnColToggle = $("btn-col-toggle");
+  const colMenu = $("col-menu-dropdown");
+  if (btnColToggle && colMenu) {
+    btnColToggle.onclick = (e) => {
+      e.stopPropagation();
+      colMenu.style.display = colMenu.style.display === "none" ? "block" : "none";
+    };
+    colMenu.onclick = (e) => e.stopPropagation();
+  }
+  document.addEventListener("click", () => {
+    const cm = $("col-menu-dropdown");
+    if (cm) cm.style.display = "none";
+  }, { once: true });
+
+  mid.querySelectorAll<HTMLInputElement>(".col-chk-input").forEach((chk) => {
+    chk.onchange = () => {
+      const col = chk.dataset.col!;
+      if (chk.checked) {
+        hiddenCols = hiddenCols.filter((x) => x !== col);
+      } else {
+        if (!hiddenCols.includes(col)) hiddenCols.push(col);
+      }
+      saveColState();
+      renderMid();
+    };
+  });
+
+  const btnReset = $("btn-col-reset");
+  if (btnReset) {
+    btnReset.onclick = () => {
+      hiddenCols = [];
+      saveColState();
+      renderMid();
+    };
+  }
+
+  const btnClose = $("btn-col-close");
+  if (btnClose && colMenu) {
+    btnClose.onclick = () => {
+      colMenu.style.display = "none";
+    };
+  }
+
   bindTable(req);
   const table = mid.querySelector<HTMLTableElement>("table");
   if (table) initResizableColumns(table);
@@ -958,37 +1204,7 @@ function renderMid(): void {
 
 function bindTable(req: QuoteRequest): void {
   const tb = $("tb");
-  tb.addEventListener("mouseover", (e) => {
-    const target = e.target as HTMLElement;
-    if (target.tagName !== "INPUT") {
-      $("tip").style.display = "none";
-      return;
-    }
-    const tr = target.closest<HTMLElement>("tr.row");
-    if (!tr) {
-      $("tip").style.display = "none";
-      return;
-    }
-    const item = req.items[Number(tr.dataset.i)];
-    const d = item?.drawings[0];
-    if (d) {
-      const tip = $("tip");
-      tip.style.display = "block";
-      const img = $("ti") as HTMLImageElement;
-      if (img.dataset.f !== d.filename) {
-        img.src = "";
-        img.dataset.f = d.filename;
-        renderCrop(d).then((c) => {
-          if (img.dataset.f === d.filename) img.src = c.url;
-        }).catch(() => (img.src = ""));
-      }
-      const rect = tr.getBoundingClientRect();
-      let top = rect.bottom;
-      if (top + tip.offsetHeight > window.innerHeight) top = Math.max(0, rect.top - tip.offsetHeight);
-      tip.style.top = `${top}px`;
-      tip.style.left = `${Math.min(rect.left + 50, window.innerWidth - tip.offsetWidth - 20)}px`;
-    }
-  });
+  // Kullanıcı talebi: Kasan ve ekranı kapatan hover baloncuk popup'ı kaldırıldı, önizleme sağ panelde yapılıyor.
   tb.addEventListener("click", (e) => {
     const tr = (e.target as HTMLElement).closest<HTMLElement>("tr.row");
     if (!tr) return;
@@ -1081,7 +1297,35 @@ function renderRight(focusPrice = false): void {
     <div class="mu meta">${meta}</div>
     ${prevText}
     <div class="pr"><input id="pi" placeholder="Birim fiyat" value="${esc(priceText(req, item))}" inputmode="decimal"><button class="btn p" id="pa">Uygula</button></div>
-    <div class="mu" style="margin-top:6px">Enter: uygula ve sonraki kaleme geç</div>`;
+    <div class="mu" style="margin-top:4px">Enter: uygula ve sonraki kaleme geç</div>
+
+    <div id="rp-stock-calc" style="margin-top:10px; padding:10px; background:var(--bg); border:1px solid var(--bd); border-radius:6px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <div style="font-weight:700; font-size:11px; color:var(--mu); text-transform:uppercase;">⚖ Talaşlı İmalat Hammadde Hesabı</div>
+        <span id="rp-calc-weight" style="font-weight:700; font-size:12px; color:var(--tx);">0.00 kg</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px; margin-bottom:6px;">
+        <select id="rp-calc-shape" style="font-size:11px; padding:3px 4px; font-weight:600; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+          <option value="plate"${stockCalcState.shape === "plate" ? " selected" : ""}>⬛ Kütük / Levha</option>
+          <option value="round"${stockCalcState.shape === "round" ? " selected" : ""}>⚪ Silindirik / Çap</option>
+        </select>
+        <select id="rp-calc-mat" style="font-size:11px; padding:3px 4px; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+          ${materialOptionsHtml(stockCalcState.density)}
+        </select>
+      </div>
+      <div style="display:grid; grid-template-columns: 55px 1fr 65px; gap:6px; margin-bottom:6px;">
+        <input type="text" id="rp-calc-density" value="${stockCalcState.density}" title="Özgül Ağırlık (g/cm³)" placeholder="Özgül" style="font-size:11px; padding:3px 4px; text-align:center; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+        <input type="text" id="rp-calc-dim" placeholder="${stockCalcState.shape === "round" ? "Çap Ø x Boy (örn: 50x150)" : "En x Boy x Kalınlık (mm)"}" style="font-size:11px; padding:3px 6px; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+        <input type="text" id="rp-calc-price" value="${stockCalcState.pricePerKg}" placeholder="₺/kg" inputmode="decimal" style="font-size:11px; padding:3px 4px; text-align:right; border-radius:4px; border:1px solid var(--bd); background:var(--pn); color:var(--tx);">
+      </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; padding-top:6px; border-top:1px dashed var(--bd);">
+        <div>
+          <span style="font-size:11px; color:var(--mu);">Maliyet: </span>
+          <span id="rp-calc-res" style="font-weight:700; font-size:12.5px; color:#2ecc71;">0,00 ₺</span>
+        </div>
+        <button class="btn sm" id="rp-btn-apply" style="font-size:11px; font-weight:600; padding:2px 8px; background:var(--ac); color:#fff; border:none; border-radius:4px; cursor:pointer;">Fiyata Aktar ↵</button>
+      </div>
+    </div>`;
 
   rp.querySelectorAll<HTMLElement>("[data-sh]").forEach((b) => (b.onclick = () => {
     sheetIndex = Number(b.dataset.sh);
@@ -1098,6 +1342,98 @@ function renderRight(focusPrice = false): void {
       const box = $("cropBox");
       if (box) box.innerHTML = `<div class="mu err">Çizim açılamadı: ${esc(errText(e))}</div>`;
     });
+  }
+
+  // Sağ panel hammadde hesaplayıcı olayları
+  const rpCalcShape = $<HTMLSelectElement>("rp-calc-shape");
+  const rpCalcMat = $<HTMLSelectElement>("rp-calc-mat");
+  const rpCalcDensity = $<HTMLInputElement>("rp-calc-density");
+  const rpCalcDim = $<HTMLInputElement>("rp-calc-dim");
+  const rpCalcPrice = $<HTMLInputElement>("rp-calc-price");
+  const rpCalcWeight = $("rp-calc-weight");
+  const rpCalcRes = $("rp-calc-res");
+  const rpBtnApply = $("rp-btn-apply");
+
+  const runRpCalc = () => {
+    if (!rpCalcShape || !rpCalcDensity || !rpCalcDim || !rpCalcPrice || !rpCalcWeight || !rpCalcRes) return 0;
+    const shape = (rpCalcShape.value || stockCalcState.shape) as "plate" | "round";
+    stockCalcState.shape = shape;
+    const density = parseFloat(rpCalcDensity.value.replace(",", ".")) || 7.85;
+    stockCalcState.density = rpCalcDensity.value;
+    stockCalcState.pricePerKg = rpCalcPrice.value;
+    const price = parsePrice(rpCalcPrice.value) || 0;
+
+    const weight = computeStockWeight(shape, rpCalcDim.value, density);
+    rpCalcWeight.textContent = weight.toFixed(2) + " kg";
+    const cost = weight * price;
+    rpCalcRes.textContent = formatMoney(cost) + " ₺";
+    return cost;
+  };
+
+  if (d) {
+    extractPdfInfo(d).then((info) => {
+      if (info.material && rpCalcDensity && rpCalcMat) {
+        const dVal = detectMaterialDensity(info.material);
+        rpCalcDensity.value = dVal;
+        stockCalcState.density = dVal;
+        const curNum = parseFloat(dVal);
+        const match = MATERIALS_LIST.find((m) => Math.abs(m.density - curNum) < 0.02);
+        if (match) rpCalcMat.value = match.density.toFixed(2);
+        else rpCalcMat.value = "custom";
+        runRpCalc();
+      }
+    }).catch(() => {});
+  }
+
+  if (rpCalcShape) {
+    rpCalcShape.onchange = () => {
+      stockCalcState.shape = rpCalcShape.value as "plate" | "round";
+      if (rpCalcDim) {
+        rpCalcDim.placeholder = rpCalcShape.value === "round"
+          ? "Çap Ø x Boy (örn: 50x150)"
+          : "En x Boy x Kalınlık (mm)";
+      }
+      runRpCalc();
+    };
+  }
+
+  if (rpCalcMat) {
+    rpCalcMat.onchange = () => {
+      if (rpCalcMat.value !== "custom" && rpCalcDensity) {
+        rpCalcDensity.value = rpCalcMat.value;
+        stockCalcState.density = rpCalcMat.value;
+      }
+      runRpCalc();
+    };
+  }
+
+  if (rpCalcDensity) {
+    rpCalcDensity.oninput = () => {
+      stockCalcState.density = rpCalcDensity.value;
+      if (rpCalcMat) {
+        const curNum = parseFloat(rpCalcDensity.value.replace(",", "."));
+        const match = MATERIALS_LIST.find((m) => !isNaN(curNum) && Math.abs(m.density - curNum) < 0.02);
+        if (match) rpCalcMat.value = match.density.toFixed(2);
+        else rpCalcMat.value = "custom";
+      }
+      runRpCalc();
+    };
+  }
+
+  if (rpCalcDim) rpCalcDim.oninput = runRpCalc;
+  if (rpCalcPrice) rpCalcPrice.oninput = runRpCalc;
+
+  if (rpBtnApply) {
+    rpBtnApply.onclick = () => {
+      const cost = runRpCalc();
+      if (cost > 0) {
+        const pi = $<HTMLInputElement>("pi");
+        if (pi) {
+          pi.value = formatMoney(cost);
+          pi.focus();
+        }
+      }
+    };
   }
 
   const pi = $<HTMLInputElement>("pi");
@@ -1341,9 +1677,19 @@ async function openSettings(): Promise<void> {
         : gmail.connected
           ? `<span>Bağlı: ${esc(s.gmailAccount ?? "")}</span><button class="btn sm" id="gdis">Bağlantıyı kes</button>`
           : `<button class="btn sm" id="gcon2">Gmail'e bağlan</button>`}</div>
-      <label>Gmail'den kaç günlük e-posta okunsun</label>
-      <input type="number" id="sdays" min="1" max="365" value="${s.gmailDays}">
-      <label><input type="checkbox" id="sauto" ${auto ? "checked" : ""} ${backend.inTauri ? "" : "disabled"}> Bilgisayar açılınca başlat</label>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
+        <div>
+          <label>Teklif İstekleri Gün Sayısı (Tuğçe vb.)</label>
+          <input type="number" id="sdays" min="1" max="60" value="${s.gmailDays}">
+          <div class="mu" style="font-size:11px; margin-top:2px;">Ağır PDF çizimleri için 1-3 gün önerilir.</div>
+        </div>
+        <div>
+          <label>Sipariş / SİP / EBA Gün Sayısı</label>
+          <input type="number" id="sorderdays" min="1" max="180" value="${s.gmailOrderDays || 30}">
+          <div class="mu" style="font-size:11px; margin-top:2px;">Kazanılanları yakalamak için 30-45 gün önerilir.</div>
+        </div>
+      </div>
+      <label style="margin-top:10px;"><input type="checkbox" id="sauto" ${auto ? "checked" : ""} ${backend.inTauri ? "" : "disabled"}> Bilgisayar açılınca başlat</label>
       </div>
       <div style="display:flex;gap:8px;margin-top:16px"><button class="btn p" id="ssave">Kaydet</button><button class="btn" id="scancel">Vazgeç</button></div>`);
 
@@ -1388,7 +1734,8 @@ async function openSettings(): Promise<void> {
       sync();
       s.firms = draft.filter((f) => f.name.trim() || f.match.length).map((f) => ({ ...f, name: f.name.trim() || suggestFirmName(f.match[0] ?? "") }));
       s.archiveRoot = archive.trim() || s.archiveRoot;
-      s.gmailDays = Math.max(1, Math.min(365, Number($<HTMLInputElement>("sdays").value) || 30));
+      s.gmailDays = Math.max(1, Math.min(60, Number($<HTMLInputElement>("sdays").value) || 2));
+      s.gmailOrderDays = Math.max(1, Math.min(180, Number($<HTMLInputElement>("sorderdays").value) || 30));
       const wantAuto = $<HTMLInputElement>("sauto").checked;
       if (wantAuto !== auto) await backend.setAutostart(wantAuto).catch((e) => toast(`Açılışta başlatma ayarlanamadı: ${errText(e)}`));
       persist("settings");
