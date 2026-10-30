@@ -108,6 +108,9 @@ function statusLabel(item: Item): string {
 
 let showOldOffers = false;
 
+/** EBA sipariş / kazanıldı mailleri (SİB, SİP, Sipariş, Kazanıldı...). */
+export const ORDER_RE = /(?:^|[^\p{L}\p{N}])(?:S[İI]B|S[İI]P|S[İI]PAR[İI][SŞ]|SATINALMA|KAZANILDI|KAZANDINIZ)(?![\p{L}\p{N}])/iu;
+
 function offerExcelFilename(req: QuoteRequest): string {
   let dtStr = "";
   if (req.requestTag) {
@@ -136,28 +139,91 @@ function offerExcelFilename(req: QuoteRequest): string {
   return `Teklif_${dtStr}.xlsx`;
 }
 
+// ---------------------------------------------------------------- Excel gibi sütunlar
+
+const COLW_KEY = "bt.colWidths";
+const COLHIDE_KEY = "bt.hiddenCols";
+const MIN_COL_W = 15;
+
+function loadJson<T>(key: string, def: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? (JSON.parse(v) as T) : def;
+  } catch {
+    return def;
+  }
+}
+
+const colWidths: Record<string, number> = loadJson(COLW_KEY, {});
+let hiddenCols: string[] = loadJson(COLHIDE_KEY, []);
+
+function saveColState(): void {
+  try {
+    localStorage.setItem(COLW_KEY, JSON.stringify(colWidths));
+    localStorage.setItem(COLHIDE_KEY, JSON.stringify(hiddenCols));
+  } catch {}
+}
+
+function hideColumn(name: string): void {
+  if (!hiddenCols.includes(name)) hiddenCols.push(name);
+  saveColState();
+  renderMid();
+}
+
+function showColumns(names: string[]): void {
+  hiddenCols = hiddenCols.filter((h) => !names.includes(h));
+  saveColState();
+  renderMid();
+}
+
+/** Sağa yapışık sütunların (Önceki / Birim Fiyat / Toplam) right ofsetlerini hesaplar. */
+function updateStickyOffsets(table: HTMLTableElement): void {
+  const heads = [...table.querySelectorAll<HTMLTableCellElement>("thead th[data-stk]")]
+    .sort((a, b) => Number(a.dataset.stk) - Number(b.dataset.stk));
+  let right = 0;
+  for (const th of heads) {
+    const k = th.dataset.stk!;
+    table.querySelectorAll<HTMLElement>(`[data-stk="${k}"]`).forEach((c) => (c.style.right = `${right}px`));
+    right += th.offsetWidth;
+  }
+}
+
 function initResizableColumns(table: HTMLTableElement): void {
-  const ths = table.querySelectorAll<HTMLTableCellElement>("thead th");
+  const ths = [...table.querySelectorAll<HTMLTableCellElement>("thead th")];
+  // 1) Otomatik düzende ölç, sonra sabit düzene geç (sütunlar artık serbestçe daralır)
+  const widths = ths.map((th) => colWidths[th.dataset.col ?? ""] ?? th.offsetWidth);
+  ths.forEach((th, i) => (th.style.width = `${widths[i]}px`));
+  table.style.tableLayout = "fixed";
+  table.style.minWidth = "0";
+  table.style.width = `${widths.reduce((a, b) => a + b, 0)}px`;
+
   ths.forEach((th) => {
     if (th.querySelector(".col-resizer")) return;
     const resizer = document.createElement("div");
     resizer.className = "col-resizer";
+    resizer.title = "Sürükle: genişlet/daralt · Çift tık: varsayılan";
     th.appendChild(resizer);
 
     let startX = 0;
     let startWidth = 0;
+    let startTable = 0;
 
     const onMouseMove = (e: MouseEvent) => {
-      const dx = e.clientX - startX;
-      const newWidth = Math.max(35, startWidth + dx);
-      th.style.width = `${newWidth}px`;
-      th.style.minWidth = `${newWidth}px`;
+      const w = Math.max(MIN_COL_W, startWidth + (e.clientX - startX));
+      th.style.width = `${w}px`;
+      table.style.width = `${startTable + (w - startWidth)}px`;
+      updateStickyOffsets(table);
     };
 
     const onMouseUp = () => {
       resizer.classList.remove("resizing");
+      document.body.style.cursor = "";
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      if (th.dataset.col) {
+        colWidths[th.dataset.col] = th.offsetWidth;
+        saveColState();
+      }
     };
 
     resizer.addEventListener("mousedown", (e) => {
@@ -165,11 +231,79 @@ function initResizableColumns(table: HTMLTableElement): void {
       e.stopPropagation();
       startX = e.clientX;
       startWidth = th.offsetWidth;
+      startTable = table.offsetWidth;
       resizer.classList.add("resizing");
+      document.body.style.cursor = "col-resize";
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("mouseup", onMouseUp);
     });
+
+    resizer.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      if (th.dataset.col) delete colWidths[th.dataset.col];
+      saveColState();
+      renderMid();
+    });
   });
+
+  // 2) Sütun gizleme: × ikonu veya sağ tık
+  table.querySelectorAll<HTMLElement>("[data-hide]").forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      hideColumn(b.dataset.hide!);
+    };
+  });
+  table.querySelectorAll<HTMLTableCellElement>("thead th[data-hideable]").forEach((th) => {
+    th.oncontextmenu = (e) => {
+      e.preventDefault();
+      hideColumn(th.dataset.col!);
+    };
+  });
+
+  updateStickyOffsets(table);
+}
+
+/** Önceki fiyat hücresi: yeni fiyat düştüyse yeşil ▼, arttıysa kırmızı ▲. */
+function prevCellHtml(req: QuoteRequest, it: Item): string {
+  const prev = getPreviousPrice(req, it.code);
+  if (!prev) return `<span class="mu">—</span>`;
+  const cur = priceOf(req, it);
+  let arrow = "";
+  if (cur != null) {
+    const diff = cur - prev.price;
+    const pct = prev.price ? Math.abs((diff / prev.price) * 100).toFixed(1) : "0";
+    if (Math.abs(diff) < 0.005) arrow = `<span class="pv-eq" title="Önceki fiyatla aynı">=</span>`;
+    else if (diff < 0) arrow = `<span class="pv-down" title="Önceki fiyattan %${pct} düşük">▼</span>`;
+    else arrow = `<span class="pv-up" title="Önceki fiyattan %${pct} yüksek">▲</span>`;
+  }
+  const tip = `${new Date(prev.date).toLocaleDateString("tr-TR")}${prev.qty ? ` · ${prev.qty} adet` : ""}`;
+  return `<span class="pv" title="Önceki teklif: ${esc(tip)}">${formatMoney(prev.price)}</span>${arrow}`;
+}
+
+/** Tablonun üstünde her zaman görünen özet barı. */
+function summaryHtml(req: QuoteRequest): string {
+  let priced = 0;
+  let total = 0;
+  for (const it of req.items) {
+    const p = priceOf(req, it);
+    if (p != null) {
+      priced++;
+      if (it.qty != null) total += p * it.qty;
+    }
+  }
+  const offer = state.offers[req.id];
+  const status = offer?.result === "won"
+    ? `<span class="badge-won">Kazanıldı</span>`
+    : offer?.result === "lost"
+      ? `<span class="badge-lost">Kaybedildi</span>`
+      : offer
+        ? `<span class="badge-wait">Teklif verildi · sonuç bekleniyor</span>`
+        : `<span class="badge-wait">Hazırlanıyor</span>`;
+  const totCls = offer?.result === "won" ? "offer-total-won" : offer?.result === "lost" ? "offer-total-lost" : "";
+  return `<span>Toplam Kalem: <b>${req.items.length}</b></span>
+    <span>Fiyatlı: <b>${priced}/${req.items.length}</b></span>
+    <span>Toplam Tutar: <b class="sum-tot ${totCls}">${formatMoney(total)} ₺</b></span>
+    <span>Durum: ${status}</span>`;
 }
 
 function regroup(): void {
@@ -596,7 +730,8 @@ function renderSidebar(): void {
           const offer = state.offers[r.id];
           
           // EBA'dan SİB / SİP / Sipariş mailleri geldiyse otomatik won işaretle
-          const isOrderMail = r.mails.some(m => /\b(?:S[İI]B|S[İI]P|S[İI]PAR[İI][SŞ]|SATINALMA)\b/i.test(m.subject));
+          // Not: JS \b Türkçe harflerde (İ, Ş) çalışmaz; Unicode sınırı kullanılıyor.
+          const isOrderMail = r.mails.some(m => ORDER_RE.test(m.subject));
           if (isOrderMail && offer && !offer.result) {
             offer.result = "won";
             persist("offers");
@@ -640,7 +775,8 @@ function renderSidebar(): void {
             else if (isLost) resultBadge = `<span class="badge-lost">Kaybedildi</span>`;
           }
 
-          html += `<div class="req ${r.id === state.selectedRequest ? "on" : ""}" data-req="${esc(r.id)}">
+          const band = offer?.result === "won" ? "won" : offer?.result === "lost" ? "lost" : "";
+          html += `<div class="req ${r.id === state.selectedRequest ? "on" : ""} ${band}" data-req="${esc(r.id)}">
             <button class="btn-rm" data-rmreq="${esc(r.id)}" title="Gizle/Sil">×</button>
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
               <b>${esc(requestTitle(r))}</b>
@@ -756,25 +892,26 @@ function renderMid(): void {
 
   const qc = req.qtyCol;
   const dc = descCol(req);
-  const head = req.headers.map((h, c) => `<th class="${c === qc ? "n" : ""}">${esc(h)}</th>`).join("");
+  // Gizlenen sütunlar (başlık adına göre, tüm isteklerde geçerli)
+  const visible = req.headers.map((_, c) => c).filter((c) => !hiddenCols.includes(req.headers[c]));
+  const hiddenHere = req.headers.filter((h) => hiddenCols.includes(h));
+  const head = visible.map((c) => {
+    const h = req.headers[c];
+    return `<th class="${c === qc ? "n" : ""}" data-col="${esc(h)}" data-hideable="1" title="${esc(h)} — sağ tık: gizle"><span class="th-l">${esc(h)}</span><button class="th-x" data-hide="${esc(h)}" title="Sütunu gizle">×</button></th>`;
+  }).join("");
   const rows = req.items.map((it) => {
-    const cells = it.cells.map((v, c) => {
-      if (c === req.codeCol) return `<td class="code"><span class="dot ${it.status}" title="${statusLabel(it)}"></span>${esc(v)}</td>`;
+    const cells = visible.map((c) => {
+      const v = it.cells[c] ?? "";
+      if (c === req.codeCol) return `<td class="code" title="${esc(v)}"><span class="dot ${it.status}" title="${statusLabel(it)}"></span>${esc(v)}</td>`;
       if (c === dc) return `<td class="desc" title="${esc(v)}">${esc(v)}</td>`;
-      return `<td class="${c === qc ? "n" : ""}">${esc(v)}</td>`;
+      return `<td class="${c === qc ? "n" : ""}" title="${esc(v)}">${esc(v)}</td>`;
     }).join("");
     const pt = priceText(req, it);
-    let prefill = "";
-    if (!pt) {
-      const prev = getPreviousPrice(req, it.code);
-      if (prev) {
-        prefill = `<div class="prev-hint" style="font-size:11px; color:#c65; margin-top:4px;">Önceki: ${formatMoney(prev.price)}₺</div>`;
-      }
-    }
     const bad = pt && parsePrice(pt) == null;
     return `<tr class="row ${it.index === state.selectedItem ? "sel" : ""}" data-i="${it.index}">${cells}
-      <td class="n" style="vertical-align: top;"><input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="—" ${bad ? 'style="border-color:var(--er)"' : ""}>${prefill}</td>
-      <td class="n tot" id="t${it.index}" style="vertical-align: top;">${totalText(req, it)}</td></tr>`;
+      <td class="n stk stk-first" data-stk="2" id="pv${it.index}">${prevCellHtml(req, it)}</td>
+      <td class="n stk" data-stk="1"><input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="—" ${bad ? 'style="border-color:var(--er)"' : ""}></td>
+      <td class="n tot stk" data-stk="0" id="t${it.index}">${totalText(req, it)}</td></tr>`;
   }).join("");
 
   const notes: string[] = [];
@@ -796,7 +933,12 @@ function renderMid(): void {
   if (!req.items.length) notes.push(`<span class="warn">Bu e-postalarda kalem tablosu bulunamadı. Tablo içeren parça gelince birleşir.</span>`);
 
   const src = req.mails.map((m) => (m.forwardedBy ? `${m.sender.address} (ileten: ${m.forwardedBy.address})` : m.sender.address));
-  mid.innerHTML = `<div class="tw"><table><thead><tr>${head}<th class="n new">Birim Fiyat</th><th class="n new">Toplam</th></tr></thead>
+  const twCls = offer?.result === "won" ? "won" : offer?.result === "lost" ? "lost" : "";
+  const showBtn = hiddenHere.length
+    ? `<button class="btn sm" id="showcols" title="${esc(hiddenHere.join(", "))}">Sütunları göster (${hiddenHere.length} gizli)</button>`
+    : "";
+  mid.innerHTML = `<div class="sumbar ${twCls}"><div class="sum-in" id="sumbar">${summaryHtml(req)}</div>${showBtn}</div>
+    <div class="tw ${twCls}"><table><thead><tr>${head}<th class="n new stk stk-first" data-stk="2" data-col="__prev">Önceki</th><th class="n new stk" data-stk="1" data-col="__price">Birim Fiyat</th><th class="n new stk" data-stk="0" data-col="__total">Toplam</th></tr></thead>
     <tbody id="tb">${rows}</tbody></table></div>
     <p class="mu">Satırın üzerine gelince çizim önizlemesi açılır, tıklayınca sağda büyür.</p>
     ${notes.map((n) => `<div class="note">${n}</div>`).join("")}
@@ -807,6 +949,8 @@ function renderMid(): void {
     e.preventDefault();
     removeRequest(req);
   };
+  const sc = $("showcols");
+  if (sc) sc.onclick = () => showColumns(hiddenHere);
   bindTable(req);
   const table = mid.querySelector<HTMLTableElement>("table");
   if (table) initResizableColumns(table);
@@ -863,6 +1007,8 @@ function bindTable(req: QuoteRequest): void {
     inp.style.borderColor = (inp.value.trim() && parsePrice(inp.value) == null) ? "var(--er)" : "";
     const tEl = $(`t${item.index}`);
     if (tEl) tEl.textContent = totalText(req, item);
+    const pvEl = $(`pv${item.index}`);
+    if (pvEl) pvEl.innerHTML = prevCellHtml(req, item);
     renderFooter();
   });
   tb.addEventListener("change", (e) => {
@@ -966,6 +1112,8 @@ function renderRight(focusPrice = false): void {
     }
     const tEl = $(`t${item.index}`);
     if (tEl) tEl.textContent = totalText(req, item);
+    const pvEl = $(`pv${item.index}`);
+    if (pvEl) pvEl.innerHTML = prevCellHtml(req, item);
     renderFooter();
   };
   pi.onkeydown = (e) => {
@@ -1004,6 +1152,8 @@ function renderFooter(): void {
   $("cnt").textContent = String(count);
   $("all").textContent = String(items.length);
   $("gt").textContent = formatMoney(total);
+  const sb = $("sumbar");
+  if (sb && req) sb.innerHTML = summaryHtml(req);
   const full = $<HTMLInputElement>("full");
   full.checked = req ? !!state.settings.fullList[firmKey(req)] : false;
   full.disabled = !req;
