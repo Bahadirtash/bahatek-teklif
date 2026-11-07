@@ -49,15 +49,45 @@ export function isItemCode(s: string): boolean {
          GENERAL_CODE_RE.test(trimmed);
 }
 
+/** Türkçe karakterleri büyük ASCII harflere dönüştürür (İ/i/ı -> I, Ş/ş -> S vb.) */
+export function normTr(s: string): string {
+  return s
+    .replace(/[İiıI]/g, "I")
+    .replace(/[Şş]/g, "S")
+    .replace(/[Ğğ]/g, "G")
+    .replace(/[Üü]/g, "U")
+    .replace(/[Öö]/g, "O")
+    .replace(/[Çç]/g, "C")
+    .toUpperCase();
+}
+
 /** Koddan baştaki 'F' harfini veya TIA boşluğunu normalize et */
 export function normalizeCodeStr(s: string): string {
-  let clean = s.trim().toUpperCase().replace(/[\s\t\r\n]+/g, "");
+  let clean = normTr(s.trim()).replace(/[\s\t\r\n]+/g, "");
   // Uzantı varsa kaldır
   const lastDot = clean.lastIndexOf(".");
   if (lastDot > 0 && lastDot >= clean.length - 5) {
     clean = clean.substring(0, lastDot);
   }
   return clean;
+}
+
+/** Revizyon harfinden bağımsız ana parça anahtarı (Önceki fiyat ve SİP eşleştirmesi için) */
+export function baseCodeKey(code: string): string {
+  const trimmed = normTr(code.trim());
+  const m = CLASSIC_CODE_RE.exec(trimmed);
+  if (m) {
+    return m[1]; // "FU00230931-A-03" -> "00230931"
+  }
+  const mNum = /^[A-Z]{0,5}[\s_-]?(\d{5,12})(?:[/_-][A-Z](?:-\d+)?)?$/i.exec(trimmed);
+  if (mNum) {
+    return mNum[1]; // "U00314268_A" -> "00314268", "FTM30002337" -> "30002337"
+  }
+  const ck = codeKey(trimmed);
+  if (ck) {
+    return ck.replace(/_[A-Z]$/, "").replace(/[^A-Z0-9]/g, "");
+  }
+  return normalizeCodeStr(trimmed).replace(/[^A-Z0-9]/g, "");
 }
 
 export function codeKey(code: string): string | null {
@@ -103,29 +133,47 @@ export function drawingKey(filename: string): { key: string; sheet: number } {
 }
 
 /** Bir metindeki anlamlı kod bloklarını (5+ haneli sayılar, alfanümerik parça no) çıkarır */
-function extractTokens(s: string): string[] {
+export function extractTokens(s: string): string[] {
   const tokens = new Set<string>();
-  // Dosya uzantısını (.pdf, .png vb.) kaldır
-  const noExt = s.replace(/\.(?:pdf|png|jpe?g|dwg|dxf|tiff?)\b/gi, "");
-  const upper = noExt.toUpperCase();
+  // Dosya uzantısını (.pdf, .png, .xlsx vb.) ve tarihleri (26.09.2026) kaldır
+  const noExt = s
+    .replace(/\.(?:pdf|png|jpe?g|dwg|dxf|tiff?|xlsx?)\b/gi, "")
+    .replace(/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/g, " ");
+  const upper = normTr(noExt);
 
-  // 5 veya daha fazla basamaklı ardışık sayılar (Eti Makine parça no: 30012486)
-  for (const m of upper.matchAll(/\b\d{5,12}\b/g)) {
-    tokens.add(m[0]);
+  // Klasik kod kalıpları: FU00314268/B-03, U00314268_B vb.
+  for (const m of upper.matchAll(/[A-Z]{0,5}(\d{5,12})[/_-]([A-Z])(?:-\d+)?/g)) {
+    tokens.add(`${m[1]}_${m[2]}`);
+    tokens.add(m[1]);
+    const noZero = m[1].replace(/^0+/, "");
+    if (noZero.length >= 5) tokens.add(noZero);
   }
-  // Harf-sayı blokları (E026BF3736, K00041645, U00314268, BFBY2026)
-  for (const m of upper.matchAll(/[A-Z0-9_.-]{4,}/g)) {
-    const clean = m[0].replace(/[^A-Z0-9]/g, "");
-    if (clean.length >= 4 && /\d/.test(clean)) {
+
+  // Harf içinde veya bağımsız geçen 5-12 basamaklı parça numaraları (FU00314268 -> 00314268, FTM30002337 -> 30002337, TIA 30012486 -> 30012486)
+  for (const m of upper.matchAll(/(?<!\d)\d{5,12}(?!\d)/g)) {
+    const num = m[0];
+    tokens.add(num);
+    const noZero = num.replace(/^0+/, "");
+    if (noZero.length >= 5) tokens.add(noZero);
+  }
+
+  // Harf-sayı blokları (E026BF3736, FE026BF3736, K00041645, U00314268, BFBY2026.01.306)
+  for (const m of upper.matchAll(/[A-Z0-9_./-]{4,}/g)) {
+    const rawBlock = m[0].replace(/^[./_-]+|[./_-]+$/g, "");
+    const clean = rawBlock.replace(/[^A-Z0-9]/g, "");
+    if (clean.length >= 5 && /[A-Z]/.test(clean) && /\d/.test(clean)) {
       tokens.add(clean);
-      // Baştaki F düşmesini de ekle
-      if (clean.startsWith("FE") || clean.startsWith("FU")) {
+      // Baştaki F düşmesini de ekle (FE026BF3736 -> E026BF3736, FU00314268 -> U00314268)
+      if ((clean.startsWith("FE") || clean.startsWith("FU")) && clean.length >= 6) {
         tokens.add(clean.substring(1));
       }
-      // Yaygın son ekleri kaldır (_MF, _ME, _DWG vb.)
-      const trimmedSuffix = clean.replace(/(?:MF|ME|DWG\d*)$/i, "");
-      if (trimmedSuffix.length >= 4 && trimmedSuffix !== clean) {
+      // Yaygın son ekleri kaldır (_MF, _ME, _DWG, SHT1 vb.)
+      const trimmedSuffix = clean.replace(/(?:MF|ME|DWG\d*|SHT\d+)$/i, "");
+      if (trimmedSuffix.length >= 5 && trimmedSuffix !== clean) {
         tokens.add(trimmedSuffix);
+        if ((trimmedSuffix.startsWith("FE") || trimmedSuffix.startsWith("FU")) && trimmedSuffix.length >= 6) {
+          tokens.add(trimmedSuffix.substring(1));
+        }
       }
     }
   }

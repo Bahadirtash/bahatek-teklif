@@ -9,7 +9,14 @@
   </head>
 
   <body>
-    <header><b>Bahatek Teklif</b><span id="status"></span><button class="btn sm" id="update-btn" style="margin-left:auto; background:var(--ac); color:var(--bg); border:none; padding:4px 12px; display:none;">Güncelleme Denetle</button></header>
+    <header>
+      <b>Bahatek Teklif</b>
+      <span id="status"></span>
+      <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <button class="btn sm" id="memory-btn" style="background:var(--hl); color:var(--ac); border:1px solid var(--ac); font-weight:600; padding:4px 10px;">🧠 Fiyat & SİP Hafızası</button>
+        <button class="btn sm" id="update-btn" style="background:var(--ac); color:var(--bg); border:none; padding:4px 12px; display:none;">Güncelleme Denetle</button>
+      </div>
+    </header>
     <main>
       <aside class="col side">
         <div id="firms"></div>

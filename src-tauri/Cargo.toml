@@ -2,7 +2,7 @@
 
 [package]
 name = "bahatek-teklif"
-version = "2.2.2"
+version = "2.3.0"
 description = "Bahatek Teklif – teklif hazırlama masaüstü uygulaması"
 authors = ["Bahatek Software"]
 edition = "2021"

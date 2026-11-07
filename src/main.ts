@@ -1,14 +1,14 @@
 // Bahatek Teklif arayüzü — prototype/teklif-prototip.html görünümü ve akışı, gerçek veriyle.
 import * as backend from "./backend";
 import { groupMails, parseEml } from "./eml";
-import { normalizeCodeStr } from "./eml/codes";
-import type { Drawing, Item, QuoteRequest } from "./eml";
+import { baseCodeKey, codeKey, extractTokens, normTr, normalizeCodeStr } from "./eml/codes";
+import type { Drawing, Item, ParsedMail, QuoteRequest } from "./eml";
 import { cleanSubject, dayOf, esc, formatMoney, gmailComposeUrl, parsePrice, todayDotted } from "./format";
-import { renderCrop, renderFullPage, extractPdfInfo } from "./pdf/render";
+import { renderCrop, renderFullPage, extractPdfInfo, extractPdfRawText } from "./pdf/render";
 import {
   firmKey, firmOf, isPublicDomain, itemKey, loadState, newId, persist, state, suggestFirmName,
 } from "./state";
-import type { Firm, Result } from "./state";
+import type { Firm, PriceHistoryEntry, Result } from "./state";
 import { check } from "@tauri-apps/plugin-updater";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -38,7 +38,7 @@ function closeModal(): void {
 }
 
 function errText(e: unknown): string {
-  return e instanceof Error ? e.message : errText(e);
+  return e instanceof Error ? e.message : String(e);
 }
 
 function currentRequest(): QuoteRequest | null {
@@ -53,44 +53,9 @@ export function priceOf(req: QuoteRequest, item: Item): number | null {
   const p = parsePrice(priceText(req, item));
   return p != null && p > 0 ? p : null;
 }
-export function getPreviousPrice(req: QuoteRequest, code: string): { price: number; date: string; qty?: number } | null {
-  let best: { price: number; date: string; qty?: number } | null = null;
-  for (const [rId, offer] of Object.entries(state.offers)) {
-    if (rId === req.id) continue;
-    const prices = state.prices[rId];
-    if (!prices) continue;
-    const key = Object.keys(prices).find(k => k.endsWith(`:${code}`));
-    if (key && prices[key]) {
-      const p = parsePrice(prices[key]);
-      if (p != null && (!best || new Date(offer.at) > new Date(best.date))) {
-        let qty: number | undefined;
-        const oldReq = state.requests.find(r => r.id === rId);
-        if (oldReq) {
-          const oldItem = oldReq.items.find(i => itemKey(i.index, i.code) === key);
-          if (oldItem && oldItem.qty != null) qty = oldItem.qty;
-        }
-        best = { price: p, date: offer.at, qty };
-      }
-    }
-  }
-  return best;
-}
-
-function setPrice(req: QuoteRequest, item: Item, text: string): void {
-  const map = (state.prices[req.id] ??= {});
-  const key = itemKey(item.index, item.code);
-  if (text.trim()) map[key] = text.trim();
-  else delete map[key];
-  persist("prices", 400);
-}
-
-function totalText(req: QuoteRequest, item: Item): string {
-  const p = priceOf(req, item);
-  return p != null && item.qty != null ? formatMoney(p * item.qty) : "";
-}
 
 function descCol(req: QuoteRequest): number {
-  const byName = req.headers.findIndex((h) => /tanım/i.test(h));
+  const byName = req.headers.findIndex((h) => /tan[ıi]m|a[cç][ıi]klama/i.test(h));
   if (byName >= 0) return byName;
   return req.codeCol + 1 < req.headers.length ? req.codeCol + 1 : req.codeCol;
 }
@@ -107,10 +72,430 @@ function statusLabel(item: Item): string {
   return item.status === "ready" ? "Çizim var" : item.status === "waiting" ? "Çizim bekleniyor" : "Çizim gelmedi";
 }
 
-let showOldOffers = false;
+/** Tarih metninden veya "(16:00 26.09.2026)" etiketinden milisaniye zaman damgası üretir */
+function parseMailDateMs(dateStr?: string | null, tag?: string | null): number {
+  if (tag) {
+    const m = /(\d{1,2})[:.](\d{2})\s+(\d{1,2})\.(\d{1,2})\.(\d{4})/.exec(tag);
+    if (m) {
+      const d = new Date(Number(m[5]), Number(m[4]) - 1, Number(m[3]), Number(m[1]), Number(m[2]));
+      if (!isNaN(d.getTime())) return d.getTime();
+    }
+  }
+  if (dateStr) {
+    const dotted = /(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2})[:.](\d{2}))?/.exec(dateStr);
+    if (dotted) {
+      const d = new Date(
+        Number(dotted[3]),
+        Number(dotted[2]) - 1,
+        Number(dotted[1]),
+        Number(dotted[4] ?? 12),
+        Number(dotted[5] ?? 0),
+      );
+      if (!isNaN(d.getTime())) return d.getTime();
+    }
+    const parsed = Date.parse(dateStr);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/** Kalıcı Fiyat Hafızasına tek bir kalem kaydı ekler/günceller */
+function upsertPriceMemory(entry: PriceHistoryEntry, saveNow = false): void {
+  if (!entry.code || !(entry.price > 0)) return;
+  const existing = state.history[entry.id];
+  if (existing && existing.result && !entry.result) {
+    entry.result = existing.result;
+  }
+  state.history[entry.id] = entry;
+  if (saveNow) persist("history", 400);
+}
+
+/** Mevcut state.prices ve state.requests içindeki tüm fiyatlanmış kalemleri kalıcı hafızaya senkronize eder */
+function syncMemoryFromCurrentState(): void {
+  let changed = false;
+  for (const req of state.requests) {
+    const reqPrices = state.prices[req.id];
+    if (!reqPrices) continue;
+    const dc = descCol(req);
+    const offer = state.offers[req.id];
+    const isoDate = offer?.at || (parseMailDateMs(req.date, req.requestTag) ? new Date(parseMailDateMs(req.date, req.requestTag)).toISOString() : new Date().toISOString());
+    for (const it of req.items) {
+      const raw = reqPrices[itemKey(it.index, it.code)];
+      const p = raw ? parsePrice(raw) : null;
+      if (p != null && p > 0) {
+        const id = `${req.id}|${normalizeCodeStr(it.code)}`;
+        upsertPriceMemory({
+          id,
+          requestId: req.id,
+          code: it.code,
+          normCode: normalizeCodeStr(it.code),
+          key: codeKey(it.code) ?? normalizeCodeStr(it.code),
+          baseKey: baseCodeKey(it.code),
+          description: it.cells[dc] ?? "",
+          qty: it.qty,
+          price: p,
+          date: isoDate,
+          firm: firmName(req),
+          subject: req.subject,
+          result: offer?.result ?? null,
+          source: offer ? "offer" : "live",
+        });
+        changed = true;
+      }
+    }
+  }
+  // Ayrıca state.requests'te henüz yüklü olmasa bile state.prices içinde kayıtlı tüm geçmiş fiyatları da hafızaya al
+  for (const [rId, priceMap] of Object.entries(state.prices)) {
+    const offer = state.offers[rId];
+    const isoDate = offer?.at || new Date().toISOString();
+    for (const [k, valStr] of Object.entries(priceMap)) {
+      const p = parsePrice(valStr);
+      if (p == null || p <= 0) continue;
+      const colonIdx = k.indexOf(":");
+      const code = colonIdx >= 0 ? k.slice(colonIdx + 1) : k;
+      if (!code) continue;
+      const id = `${rId}|${normalizeCodeStr(code)}`;
+      if (!state.history[id]) {
+        upsertPriceMemory({
+          id,
+          requestId: rId,
+          code,
+          normCode: normalizeCodeStr(code),
+          key: codeKey(code) ?? normalizeCodeStr(code),
+          baseKey: baseCodeKey(code),
+          description: "",
+          qty: null,
+          price: p,
+          date: isoDate,
+          firm: rId.split("|")[0] ?? "",
+          result: offer?.result ?? null,
+          source: "live",
+        });
+        changed = true;
+      }
+    }
+  }
+  if (changed) persist("history", 500);
+}
+
+/** kayit/kalemler.json ve Teklif Arşivi klasöründeki tüm .xlsx dosyalarını tarayıp hafızaya alır */
+async function syncExternalMemory(): Promise<number> {
+  let added = 0;
+  try {
+    const recorded = await backend.readRecordedItems();
+    for (const rec of recorded) {
+      const code = String(rec.code ?? "").trim();
+      const price = Number(rec.price ?? 0);
+      if (!code || !(price > 0)) continue;
+      const rId = String(rec.requestId ?? "kayit");
+      const id = `${rId}|${normalizeCodeStr(code)}`;
+      upsertPriceMemory({
+        id,
+        requestId: rId,
+        code,
+        normCode: normalizeCodeStr(code),
+        key: codeKey(code) ?? normalizeCodeStr(code),
+        baseKey: baseCodeKey(code),
+        description: String(rec.description ?? ""),
+        qty: rec.qty != null ? Number(rec.qty) : null,
+        price,
+        date: String(rec.date || new Date().toISOString()),
+        firm: String(rec.firm ?? ""),
+        subject: String(rec.subject ?? ""),
+        result: (rec.result === "won" || rec.result === "lost") ? rec.result : null,
+        source: "kalemler",
+      });
+      added++;
+    }
+  } catch (e) {
+    console.warn("kalemler.json okunamadı", e);
+  }
+
+  try {
+    const archived = await backend.scanArchiveOffers(state.settings.archiveRoot);
+    for (const item of archived) {
+      const code = item.code.trim();
+      if (!code || !(item.price > 0)) continue;
+      const rId = `archive:${item.firm}/${item.folder}`;
+      const id = `${rId}|${normalizeCodeStr(code)}`;
+      if (!state.history[id]) {
+        upsertPriceMemory({
+          id,
+          requestId: rId,
+          code,
+          normCode: normalizeCodeStr(code),
+          key: codeKey(code) ?? normalizeCodeStr(code),
+          baseKey: baseCodeKey(code),
+          description: item.description,
+          qty: item.qty,
+          price: item.price,
+          date: item.date,
+          firm: item.firm,
+          subject: item.folder,
+          result: null,
+          source: "archive",
+        });
+        added++;
+      }
+    }
+  } catch (e) {
+    console.warn("Teklif arşivi taranamadı", e);
+  }
+
+  if (added > 0) persist("history", 300);
+  return added;
+}
+
+export interface PreviousPriceInfo {
+  price: number;
+  date: string;
+  qty?: number;
+  result?: Result;
+  code?: string;
+  firm?: string;
+  count?: number;
+}
+
+/** Bir parça kodu için daha önce verilmiş en güncel fiyat teklifini (1 gün, 1 hafta, 1 yıl önceki dahil) bulur */
+export function getPreviousPrice(req: QuoteRequest, code: string, desc = ""): PreviousPriceInfo | null {
+  const norm = normalizeCodeStr(code);
+  const cKey = codeKey(code) ?? norm;
+  const bKey = baseCodeKey(code);
+  const targetTokens = extractTokens(code + " " + desc).filter((t) => t.length >= 6);
+
+  const candidates: { tier: number; time: number; info: PreviousPriceInfo }[] = [];
+  const seenReqCodes = new Set<string>();
+
+  const consider = (
+    rId: string,
+    candCode: string,
+    candDesc: string,
+    price: number,
+    dateStr: string,
+    qty?: number | null,
+    result?: Result,
+    firm?: string,
+  ) => {
+    if (rId === req.id || !(price > 0)) return;
+    const cNorm = normalizeCodeStr(candCode);
+    const dedup = `${rId}|${cNorm}`;
+    if (seenReqCodes.has(dedup)) return;
+
+    const candKey = codeKey(candCode) ?? cNorm;
+    const candBase = baseCodeKey(candCode);
+
+    let tier = 0;
+    if (cNorm === norm || (cKey && candKey === cKey)) {
+      tier = 3; // Birebir veya aynı revizyonlu parça kodu
+    } else if (bKey && bKey.length >= 5 && candBase === bKey) {
+      tier = 2; // Aynı parça numarasının önceki revizyonu
+    } else if (targetTokens.length > 0) {
+      const cTokens = extractTokens(candCode + " " + candDesc);
+      if (targetTokens.some((t) => cTokens.includes(t))) {
+        tier = 1; // Açıklama veya gövde içindeki parça numarası eşleşmesi
+      }
+    }
+    if (tier === 0) return;
+    seenReqCodes.add(dedup);
+    const time = Date.parse(dateStr) || 0;
+    candidates.push({
+      tier,
+      time,
+      info: {
+        price,
+        date: dateStr,
+        qty: qty != null ? qty : undefined,
+        result: result ?? null,
+        code: candCode,
+        firm,
+      },
+    });
+  };
+
+  // 1) Kalıcı Hafıza (history.json + kalemler.json + Teklif Arşivi .xlsx taraması)
+  for (const h of Object.values(state.history)) {
+    const offerRes = state.offers[h.requestId]?.result ?? h.result ?? null;
+    consider(h.requestId, h.code, h.description, h.price, h.date, h.qty, offerRes, h.firm);
+  }
+
+  // 2) Canlı state.prices (henüz Teklifi Hazırla'ya basılmamış olsa bile dün/bugün girilmiş tüm fiyatlar)
+  for (const [rId, prices] of Object.entries(state.prices)) {
+    if (rId === req.id || !prices) continue;
+    const oldReq = state.requests.find((r) => r.id === rId);
+    const offer = state.offers[rId];
+    const dateStr =
+      offer?.at ||
+      (oldReq && parseMailDateMs(oldReq.date, oldReq.requestTag)
+        ? new Date(parseMailDateMs(oldReq.date, oldReq.requestTag)).toISOString()
+        : new Date().toISOString());
+
+    for (const [k, rawVal] of Object.entries(prices)) {
+      const p = parsePrice(rawVal);
+      if (p == null || p <= 0) continue;
+      const colonIdx = k.indexOf(":");
+      const candCode = colonIdx >= 0 ? k.slice(colonIdx + 1) : k;
+      let qty: number | undefined;
+      let candDesc = "";
+      if (oldReq) {
+        const oldItem = oldReq.items.find((i) => itemKey(i.index, i.code) === k || i.code === candCode);
+        if (oldItem) {
+          if (oldItem.qty != null) qty = oldItem.qty;
+          candDesc = oldItem.cells[descCol(oldReq)] ?? "";
+        }
+      }
+      consider(rId, candCode, candDesc, p, dateStr, qty, offer?.result ?? null, oldReq ? firmName(oldReq) : undefined);
+    }
+  }
+
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => (b.tier !== a.tier ? b.tier - a.tier : b.time - a.time));
+  const best = candidates[0].info;
+  best.count = candidates.length;
+  return best;
+}
+
+function setPrice(req: QuoteRequest, item: Item, text: string): void {
+  const map = (state.prices[req.id] ??= {});
+  const key = itemKey(item.index, item.code);
+  const trimmed = text.trim();
+  if (trimmed) {
+    map[key] = trimmed;
+    const p = parsePrice(trimmed);
+    if (p != null && p > 0) {
+      const dc = descCol(req);
+      const offer = state.offers[req.id];
+      const isoDate =
+        offer?.at ||
+        (parseMailDateMs(req.date, req.requestTag)
+          ? new Date(parseMailDateMs(req.date, req.requestTag)).toISOString()
+          : new Date().toISOString());
+      upsertPriceMemory(
+        {
+          id: `${req.id}|${normalizeCodeStr(item.code)}`,
+          requestId: req.id,
+          code: item.code,
+          normCode: normalizeCodeStr(item.code),
+          key: codeKey(item.code) ?? normalizeCodeStr(item.code),
+          baseKey: baseCodeKey(item.code),
+          description: item.cells[dc] ?? "",
+          qty: item.qty,
+          price: p,
+          date: isoDate,
+          firm: firmName(req),
+          subject: req.subject,
+          result: offer?.result ?? null,
+          source: offer ? "offer" : "live",
+        },
+        true,
+      );
+    }
+  } else {
+    delete map[key];
+    delete state.history[`${req.id}|${normalizeCodeStr(item.code)}`];
+    persist("history", 400);
+  }
+  persist("prices", 400);
+}
+
+function totalText(req: QuoteRequest, item: Item): string {
+  const p = priceOf(req, item);
+  return p != null && item.qty != null ? formatMoney(p * item.qty) : "";
+}
+
+type SidebarFilter = "all" | "won" | "lost" | "wait";
+let sidebarFilter: SidebarFilter = "all";
 
 /** EBA sipariş / kazanıldı mailleri (SİB, SİP, Sipariş, Kazanıldı...). */
-export const ORDER_RE = /(?:^|[^\p{L}\p{N}])(?:S[İI]B|S[İI]P|S[İI]PAR[İI][SŞ]|SATINALMA|KAZANILDI|KAZANDINIZ)(?![\p{L}\p{N}])/iu;
+export const ORDER_RE = /(?:^|[^\p{L}\p{N}])(?:S[İIıi]B|S[İIıi]P|S[İIıi]PAR[İIıi][SŞsş]|SATINALMA|SAS|EBA|KAZANILDI|KAZANDINIZ)(?![\p{L}\p{N}])/iu;
+
+const ORDER_NORM_RE = /(?:^|[^A-Z0-9])(SIP|SIB|SIPARIS|ACIK\s*SIPARIS|SATINALMA|SAS|KAZANILDI|KAZANDINIZ|SIPARIS\s*FORMU|SIPARIS\s*ONAY)(?![A-Z0-9])/;
+const EBA_NORM_RE = /(?:^|[^A-Z0-9])(EBA|EBASYSTEM|BIMSER|WORKFLOW)(?![A-Z0-9])/;
+const CANCEL_NORM_RE = /(?:^|[^A-Z0-9])(IPTAL\s*PARCA|IPTAL\s*EDIL|SIPARIS\s*IPTAL|OLUMSUZ|KAYBEDILDI)(?![A-Z0-9])/;
+const QUOTE_REQ_NORM_RE = /TEKLIF\s*ISTEGI/;
+
+/** Bir e-postanın EBA / SİP / Sipariş onay maili olup olmadığını Türkçe-güvenli olarak tespit eder */
+export function isOrderMail(m: ParsedMail): boolean {
+  const subj = normTr(m.subject);
+  const sender = normTr(`${m.sender.address} ${m.sender.name} ${m.forwardedBy?.address ?? ""} ${m.forwardedBy?.name ?? ""}`);
+  const body = normTr(m.bodyText ?? "");
+
+  if (CANCEL_NORM_RE.test(subj)) return false;
+  if (ORDER_NORM_RE.test(subj)) return true;
+
+  // Eğer konusu doğrudan "Teklif İsteği" değilse ve EBA'dan geliyorsa veya eklerinde/gövdesinde SİP varsa
+  if (!QUOTE_REQ_NORM_RE.test(subj)) {
+    if (EBA_NORM_RE.test(subj) || EBA_NORM_RE.test(sender)) return true;
+    if (m.drawings.some((d) => ORDER_NORM_RE.test(normTr(d.filename)) || EBA_NORM_RE.test(normTr(d.filename)))) return true;
+    if (m.otherAttachments.some((a) => ORDER_NORM_RE.test(normTr(a.filename)) || EBA_NORM_RE.test(normTr(a.filename)))) return true;
+    if (/(?:SIPARIS\s*NO|SIP\s*NO|ACIK\s*SIPARIS|SATINALMA\s*SIPARISI|EBA\s*BILGILENDIRME|SIPARIS\s*KALEM)/.test(body)) return true;
+  }
+  return false;
+}
+
+/** İptal / olumsuz sonuç maili mi? */
+export function isCancelMail(m: ParsedMail): boolean {
+  const subj = normTr(m.subject);
+  const body = normTr(m.bodyText ?? "");
+  return CANCEL_NORM_RE.test(subj) || (!QUOTE_REQ_NORM_RE.test(subj) && CANCEL_NORM_RE.test(body));
+}
+
+/** Bir metindeki tüm parça kodlarını ve numaralarını havuza ekler */
+function addCodesFromTextToSet(text: string, pool: Set<string>): void {
+  if (!text) return;
+  for (const tok of extractTokens(text)) {
+    if (tok.length >= 5) pool.add(tok);
+  }
+}
+
+const processedOrderAttachments = new Set<string>();
+
+/** EBA / SİP maillerindeki PDF ve Excel (.xlsx) eklerinin içindeki parça kodlarını arka planda okuyup kalıcı hafızaya kaydeder */
+async function scanOrderMailAttachments(m: ParsedMail): Promise<void> {
+  const isOrd = isOrderMail(m);
+  const isCan = isCancelMail(m);
+  if (!isOrd && !isCan) return;
+  if (processedOrderAttachments.has(m.id)) return;
+  processedOrderAttachments.add(m.id);
+
+  const targetArr = isCan ? (state.orders.canceledTokens ??= []) : state.orders.tokens;
+  const set = new Set<string>(targetArr);
+  const beforeSize = set.size;
+
+  // 1) Gövde, konu, tablo ve dosya adları
+  addCodesFromTextToSet(m.subject, set);
+  if (m.bodyText) addCodesFromTextToSet(m.bodyText, set);
+  if (m.table) {
+    for (const row of m.table.rows) {
+      addCodesFromTextToSet(row.join(" "), set);
+    }
+  }
+  for (const d of m.drawings) {
+    addCodesFromTextToSet(d.filename, set);
+    addCodesFromTextToSet(d.key, set);
+    // PDF metin katmanını oku (EBA sipariş formu PDF'leri için)
+    const pdfText = await extractPdfRawText(d).catch(() => "");
+    if (pdfText) addCodesFromTextToSet(pdfText, set);
+  }
+  for (const att of [...m.unrecognizedPdfs, ...m.otherAttachments]) {
+    addCodesFromTextToSet(att.filename, set);
+    if (/\.xlsx$/i.test(att.filename) && att.data) {
+      const { extractExcelText } = await import("./excel");
+      const xlText = await extractExcelText(att.data).catch(() => "");
+      if (xlText) addCodesFromTextToSet(xlText, set);
+    } else if (/\.pdf$/i.test(att.filename) && att.data) {
+      const fakeDrawing: Drawing = { filename: att.filename, key: att.filename, sheet: 1, data: att.data, mailId: m.id };
+      const pdfText = await extractPdfRawText(fakeDrawing).catch(() => "");
+      if (pdfText) addCodesFromTextToSet(pdfText, set);
+    }
+  }
+
+  if (set.size !== beforeSize) {
+    if (isCan) state.orders.canceledTokens = [...set];
+    else state.orders.tokens = [...set];
+    persist("orders", 300);
+    renderAll();
+  }
+}
 
 function offerExcelFilename(req: QuoteRequest): string {
   let dtStr = "";
@@ -264,9 +649,10 @@ function initResizableColumns(table: HTMLTableElement): void {
   updateStickyOffsets(table);
 }
 
-/** Önceki fiyat hücresi: yeni fiyat düştüyse yeşil ▼, arttıysa kırmızı ▲. */
+/** Önceki fiyat hücresi: yeni fiyat düştüyse yeşil ▼, arttıysa kırmızı ▲, önceki sonuç (✅/❌) rozetiyle. */
 function prevCellHtml(req: QuoteRequest, it: Item): string {
-  const prev = getPreviousPrice(req, it.code);
+  const dc = descCol(req);
+  const prev = getPreviousPrice(req, it.code, it.cells[dc] ?? "");
   if (!prev) return `<span class="mu">—</span>`;
   const cur = priceOf(req, it);
   let arrow = "";
@@ -277,38 +663,78 @@ function prevCellHtml(req: QuoteRequest, it: Item): string {
     else if (diff < 0) arrow = `<span class="pv-down" title="Önceki fiyattan %${pct} düşük">▼</span>`;
     else arrow = `<span class="pv-up" title="Önceki fiyattan %${pct} yüksek">▲</span>`;
   }
-  const tip = `${new Date(prev.date).toLocaleDateString("tr-TR")}${prev.qty ? ` · ${prev.qty} adet` : ""}`;
-  return `<span class="pv" title="Önceki teklif: ${esc(tip)}">${formatMoney(prev.price)}</span>${arrow}`;
+  const resTag =
+    prev.result === "won"
+      ? `<span title="Önceki teklif SİP ile onaylandı (Kazanıldı)" style="margin-left:3px;font-size:10px;">🟢</span>`
+      : prev.result === "lost"
+        ? `<span title="Önceki teklif onaylanmadı (Kalmadı)" style="margin-left:3px;font-size:10px;">🔴</span>`
+        : "";
+  const dateFmt = prev.date ? new Date(prev.date).toLocaleDateString("tr-TR") : "";
+  const tipParts = [
+    dateFmt,
+    prev.qty ? `${prev.qty} adet` : "",
+    prev.firm ? prev.firm : "",
+    prev.result === "won" ? "Kazanıldı (SİP)" : prev.result === "lost" ? "Kalmadı" : "",
+    prev.count && prev.count > 1 ? `(${prev.count} geçmiş kayıt)` : "",
+  ].filter(Boolean);
+  return `<span class="pv" title="Önceki teklif: ${esc(tipParts.join(" · "))}">${formatMoney(prev.price)}</span>${resTag}${arrow}`;
 }
 
 /** Tablonun üstünde her zaman görünen özet barı. */
 function summaryHtml(req: QuoteRequest): string {
+  const orderedCodes = getOrderedCodesPool();
   let priced = 0;
   let total = 0;
+  let wonCount = 0;
+  let wonTotal = 0;
   for (const it of req.items) {
     const p = priceOf(req, it);
+    const isOrd = isItemOrdered(req, it, orderedCodes);
+    if (isOrd) {
+      wonCount++;
+      if (p != null && it.qty != null) wonTotal += p * it.qty;
+    }
     if (p != null) {
       priced++;
       if (it.qty != null) total += p * it.qty;
     }
   }
   const offer = state.offers[req.id];
+  const lostCount = priced > wonCount ? priced - wonCount : 0;
   const status = offer?.result === "won"
-    ? `<span class="badge-won">Kazanıldı</span>`
+    ? `<span class="badge-won">✅ Kazanıldı${wonCount > 0 ? ` (${wonCount} SİP Onay${lostCount > 0 ? ` · ${lostCount} Kalmadı` : ""})` : ""}</span>`
     : offer?.result === "lost"
-      ? `<span class="badge-lost">Kaybedildi</span>`
-      : offer
-        ? `<span class="badge-wait">Teklif verildi · sonuç bekleniyor</span>`
+      ? `<span class="badge-lost">❌ Kalmadı / Kaybedildi</span>`
+      : offer || priced > 0
+        ? `<span class="badge-wait">⏳ Teklif verildi · SİP bekleniyor</span>`
         : `<span class="badge-wait">Hazırlanıyor</span>`;
   const totCls = offer?.result === "won" ? "offer-total-won" : offer?.result === "lost" ? "offer-total-lost" : "";
+  const wonTotSpan =
+    wonCount > 0 && wonTotal > 0 && wonTotal !== total
+      ? `<span>Onaylanan SİP Tutarı: <b class="offer-total-won">${formatMoney(wonTotal)} ₺</b></span>`
+      : "";
   return `<span>Toplam Kalem: <b>${req.items.length}</b></span>
     <span>Fiyatlı: <b>${priced}/${req.items.length}</b></span>
-    <span>Toplam Tutar: <b class="sum-tot ${totCls}">${formatMoney(total)} ₺</b></span>
+    <span>Toplam Teklif: <b class="sum-tot ${totCls}">${formatMoney(total)} ₺</b></span>
+    ${wonTotSpan}
     <span>Durum: ${status}</span>`;
 }
 
 function regroup(): void {
+  // EBA / SİP sipariş maillerinin eklerini arka planda tara
+  for (const m of state.mails.values()) {
+    if (isOrderMail(m) || isCancelMail(m)) {
+      scanOrderMailAttachments(m).catch(() => {});
+    }
+  }
   state.requests = groupMails([...state.mails.values()]);
+  // İstekleri en yeniden en eskiye sırala (hiçbiri silinmez, en güncel üstte durur)
+  state.requests.sort((a, b) => {
+    const ta = parseMailDateMs(a.date, a.requestTag);
+    const tb = parseMailDateMs(b.date, b.requestTag);
+    return tb - ta;
+  });
+  syncMemoryFromCurrentState();
   if (!state.requests.some((r) => r.id === state.selectedRequest)) {
     state.selectedRequest = state.requests[0]?.id ?? null;
     state.selectedItem = -1;
@@ -323,6 +749,7 @@ async function addEmlFiles(files: backend.LoadedFile[]): Promise<void> {
     try {
       const mail = await parseEml(f.data, `eml:${f.path ?? f.name}`);
       state.mails.set(mail.id, mail);
+      await backend.mailCacheWrite(mail.id, f.data);
       if (f.path && !state.session.emlPaths.includes(f.path)) state.session.emlPaths.push(f.path);
       ok++;
     } catch (e) {
@@ -333,37 +760,46 @@ async function addEmlFiles(files: backend.LoadedFile[]): Promise<void> {
   persist("session");
   regroup();
   renderAll();
-  if (ok) toast(`${ok} e-posta yüklendi.`);
+  if (ok) toast(`${ok} e-posta kalıcı hafızaya yüklendi.`);
 }
 
 async function restoreSession(): Promise<void> {
-  if (!backend.inTauri || !state.session.emlPaths.length) return;
-  const keep: string[] = [];
+  if (!backend.inTauri) return;
+  // 1) Kalıcı disk hafızasındaki (hafiza/mailler/) tüm e-postaları yükle (asla silinmez)
+  try {
+    const cachedIds = await backend.mailCacheList();
+    let idx = 0;
+    for (const id of cachedIds) {
+      if (state.mails.has(id)) continue;
+      try {
+        if (++idx % 5 === 0) {
+          $("status").textContent = `Hafıza yükleniyor: ${idx}/${cachedIds.length}…`;
+        }
+        const data = await backend.mailCacheRead(id);
+        const mail = await parseEml(data, id);
+        state.mails.set(mail.id, mail);
+      } catch (e) {
+        console.warn("hafıza maili okunamadı", id, e);
+      }
+    }
+  } catch (e) {
+    console.warn("hafıza listesi alınamadı", e);
+  }
+
+  // 2) Oturumdaki .eml dosyalarını yükle ve kalıcı hafızaya yedekle
   for (const path of state.session.emlPaths) {
+    const id = `eml:${path}`;
+    if (state.mails.has(id)) continue;
     try {
       const data = await backend.readEml(path);
-      const mail = await parseEml(data, `eml:${path}`);
+      const mail = await parseEml(data, id);
       state.mails.set(mail.id, mail);
-      keep.push(path);
+      await backend.mailCacheWrite(mail.id, data);
     } catch (e) {
       console.warn("oturum dosyası açılamadı", path, e);
     }
   }
-  if (keep.length !== state.session.emlPaths.length) {
-    state.session.emlPaths = keep;
-    persist("session");
-  }
   regroup();
-}
-
-function removeRequest(req: QuoteRequest): void {
-  for (const m of req.mails) {
-    state.mails.delete(m.id);
-    if (m.id.startsWith("eml:")) state.session.emlPaths = state.session.emlPaths.filter((p) => `eml:${p}` !== m.id);
-  }
-  persist("session");
-  regroup();
-  renderAll();
 }
 
 // ---------------------------------------------------------------- Gmail (salt okuma)
@@ -373,15 +809,24 @@ let gmailBusy = false;
 let gmailLast = "";
 
 function gmailQuery(): string {
-  const rules = state.settings.firms.flatMap((f) => f.match).map((m) => m.trim()).filter(Boolean);
-  const since = `newer_than:${Math.max(1, state.settings.gmailDays || 3)}d`;
-  // İzin listesi boşsa ilk kurulum: konusunda "teklif" geçenler, firma eklenebilsin diye.
-  return rules.length ? `from:(${rules.join(" OR ")}) ${since}` : `subject:teklif ${since}`;
+  const rawRules = state.settings.firms.flatMap((f) => f.match).map((m) => m.trim()).filter(Boolean);
+  const expanded = new Set<string>();
+  for (const r of rawRules) {
+    expanded.add(r);
+    // Kurumsal e-posta ise (örn. tugce.sahin@etimakine.com.tr), aynı kurumsal alan adını da (etimakine.com.tr) ekle ki EBA ve diğer yetkililerin mailleri de gelsin
+    if (r.includes("@")) {
+      const dom = r.split("@")[1]?.toLowerCase() ?? "";
+      if (dom && !isPublicDomain(dom)) expanded.add(dom);
+    }
+  }
+  const since = `newer_than:${Math.max(30, state.settings.gmailDays || 60)}d`;
+  return expanded.size ? `from:(${[...expanded].join(" OR ")}) ${since}` : `(teklif OR SİP OR SIP OR sipariş OR EBA) ${since}`;
 }
 
 function gmailOrderQuery(): string {
-  const days = Math.max(1, state.settings.gmailOrderDays || 30);
-  return `(subject:(SİP OR SİB OR Sipariş OR "Açık Sipariş" OR SATINALMA OR KAZANILDI OR "iptal parça" OR SIPARIS) OR from:(*eba* OR *siparis*)) newer_than:${days}d`;
+  const days = Math.max(30, state.settings.gmailOrderDays || 90);
+  // Not: Gmail arama sözdizimi *eba* gibi başında yıldızlı aramayı desteklemez; doğrudan kelime araması hem göndereni hem konuyu hem ek adını kapsar.
+  return `(SİP OR SIP OR SİB OR SIB OR Sipariş OR Siparis OR "Açık Sipariş" OR "Acik Siparis" OR SATINALMA OR Satınalma OR EBA OR eba OR SAS OR KAZANILDI OR "iptal parça") newer_than:${days}d`;
 }
 
 async function gmailRefresh(silent = false): Promise<void> {
@@ -389,10 +834,10 @@ async function gmailRefresh(silent = false): Promise<void> {
   gmailBusy = true;
   renderGmailBox();
   try {
-    // 1. Ağır teklif istekleri (Tuğçe vb.) — kısa gün aralığı (RAM şişmesini önler)
-    const quoteRefs = await backend.gmailList(gmailQuery(), 60);
-    // 2. Hafif sipariş/SİP/EBA mailleri — geniş gün aralığı (30-45 gün, kazanıldı/kaybedildi için)
-    const orderRefs = await backend.gmailList(gmailOrderQuery(), 60);
+    // 1. Firma ve teklif istekleri (kalıcı disk önbelleği sayesinde sadece yeni mailler indirilir)
+    const quoteRefs = await backend.gmailList(gmailQuery(), 200);
+    // 2. Sipariş / SİP / EBA onay mailleri
+    const orderRefs = await backend.gmailList(gmailOrderQuery(), 200);
 
     const map = new Map<string, { id: string }>();
     for (const r of [...quoteRefs, ...orderRefs]) map.set(r.id, r);
@@ -401,15 +846,18 @@ async function gmailRefresh(silent = false): Promise<void> {
     const fresh = refs.filter((r) => !state.mails.has(`gmail:${r.id}`));
     let n = 0;
     for (const r of fresh) {
-      $("status").textContent = `Gmail'den alınıyor: ${++n}/${fresh.length}…`;
+      $("status").textContent = `Gmail'den hafızaya alınıyor: ${++n}/${fresh.length}…`;
       const raw = await backend.gmailRaw(r.id);
-      const mail = await parseEml(raw, `gmail:${r.id}`);
+      const id = `gmail:${r.id}`;
+      const mail = await parseEml(raw, id);
       state.mails.set(mail.id, mail);
+      // İndirilen her maili kalıcı olarak diske kaydet (bir daha asla kaybolmasın ve tekrar indirilmesin)
+      await backend.mailCacheWrite(mail.id, raw);
     }
     gmailLast = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
     regroup();
     renderAll();
-    if (!silent || fresh.length) toast(fresh.length ? `Gmail: ${fresh.length} yeni e-posta.` : "Gmail: yeni e-posta yok.");
+    if (!silent || fresh.length) toast(fresh.length ? `Gmail: ${fresh.length} yeni e-posta hafızaya kaydedildi.` : "Gmail: yeni e-posta yok.");
   } catch (e) {
     const msg = errText(e);
     if (msg.includes("GMAIL_YENIDEN_BAGLAN")) {
@@ -841,145 +1289,315 @@ async function showFullPage(d: Drawing, item: Item | null = null): Promise<void>
   }
 }
 
-// ---------------------------------------------------------------- sol bölme
+// ---------------------------------------------------------------- sol bölme & SİP / EBA Eşleştirme Motoru
 
-/** Tüm sipariş maillerinden (SİP, SİB, Açık Sipariş Sorgusu vb.) geçen parça kodları havuzu */
+/** Tüm sipariş maillerinden (EBA, SİP, SİB, Açık Sipariş Sorgusu vb.) ve kalıcı hafızadan geçen parça kodları havuzu */
 function getOrderedCodesPool(): Set<string> {
-  const pool = new Set<string>();
+  const pool = new Set<string>(state.orders.tokens);
+  let addedNew = false;
+
   for (const r of state.requests) {
-    const isOrderReq = r.mails.some(m => ORDER_RE.test(m.subject));
-    if (isOrderReq) {
-      for (const it of r.items) {
-        if (it.code) {
-          pool.add(normalizeCodeStr(it.code));
-          const nums = it.code.match(/\b\d{5,12}\b/g);
-          if (nums) nums.forEach(n => pool.add(n));
+    const isOrderReq = r.mails.some(isOrderMail);
+    if (!isOrderReq) continue;
+
+    for (const it of r.items) {
+      if (it.code) {
+        const before = pool.size;
+        pool.add(normalizeCodeStr(it.code));
+        const ck = codeKey(it.code);
+        if (ck) pool.add(ck);
+        const bk = baseCodeKey(it.code);
+        if (bk && bk.length >= 5) pool.add(bk);
+        addCodesFromTextToSet(it.code + " " + it.cells.join(" "), pool);
+        if (pool.size !== before) addedNew = true;
+      }
+    }
+    for (const m of r.mails) {
+      const before = pool.size;
+      addCodesFromTextToSet(m.subject, pool);
+      if (m.bodyText) addCodesFromTextToSet(m.bodyText, pool);
+      if (m.table) {
+        for (const row of m.table.rows) {
+          addCodesFromTextToSet(row.join(" "), pool);
         }
       }
-      for (const m of r.mails) {
-        let text = m.subject.toUpperCase();
-        if (m.table) {
-          for (const row of m.table.rows) {
-            text += " " + row.join(" ");
-          }
-        }
-        for (const num of text.matchAll(/\b\d{5,10}\b/g)) {
-          pool.add(num[0]);
-        }
+      for (const d of m.drawings) {
+        addCodesFromTextToSet(d.filename, pool);
+        addCodesFromTextToSet(d.key, pool);
+      }
+      for (const att of [...m.unrecognizedPdfs, ...m.otherAttachments]) {
+        addCodesFromTextToSet(att.filename, pool);
+      }
+      if (pool.size !== before) addedNew = true;
+    }
+  }
+
+  if (addedNew) {
+    state.orders.tokens = [...pool];
+    persist("orders", 500);
+  }
+  return pool;
+}
+
+function getCanceledCodesPool(): Set<string> {
+  const pool = new Set<string>(state.orders.canceledTokens ?? []);
+  for (const r of state.requests) {
+    if (!r.mails.some(isCancelMail)) continue;
+    for (const m of r.mails) {
+      addCodesFromTextToSet(m.subject, pool);
+      if (m.bodyText) addCodesFromTextToSet(m.bodyText, pool);
+      if (m.table) {
+        for (const row of m.table.rows) addCodesFromTextToSet(row.join(" "), pool);
       }
     }
   }
   return pool;
 }
 
+/** Bir kalemin EBA / SİP sipariş havuzunda onaylanıp onaylanmadığını kontrol eder */
+export function isItemOrdered(req: QuoteRequest, it: Item, orderedPool: Set<string>): boolean {
+  const manualKey = `${req.id}|${normalizeCodeStr(it.code)}`;
+  const manual = state.orders.itemResults?.[manualKey];
+  if (manual === "won") return true;
+  if (manual === "lost") return false;
+
+  const norm = normalizeCodeStr(it.code);
+  if (norm && orderedPool.has(norm)) return true;
+  const ck = codeKey(it.code);
+  if (ck && orderedPool.has(ck)) return true;
+  const bk = baseCodeKey(it.code);
+  if (bk && bk.length >= 5 && orderedPool.has(bk)) return true;
+
+  const dc = descCol(req);
+  const desc = it.cells[dc] ?? "";
+  const tokens = extractTokens(`${it.code} ${desc} ${it.drawings.map((d) => d.filename).join(" ")}`);
+  return tokens.some((t) => t.length >= 5 && orderedPool.has(t));
+}
+
+function isItemCanceled(req: QuoteRequest, it: Item, canceledPool: Set<string>): boolean {
+  if (!canceledPool.size) return false;
+  const dc = descCol(req);
+  const tokens = extractTokens(`${it.code} ${it.cells[dc] ?? ""}`);
+  return tokens.some((t) => t.length >= 5 && canceledPool.has(t));
+}
+
+/** En son gelen EBA / SİP sipariş mailinin zaman damgası */
+function getLatestOrderMailTimeMs(): number {
+  let latest = 0;
+  for (const r of state.requests) {
+    if (r.mails.some(isOrderMail)) {
+      const t = parseMailDateMs(r.date, r.requestTag);
+      if (t > latest) latest = t;
+    }
+  }
+  return latest;
+}
+
 function renderSidebar(): void {
   const groups = new Map<string, { title: string; firm: Firm | null; people: Map<string, QuoteRequest[]> }>();
   for (const f of state.settings.firms) groups.set(f.id, { title: f.name, firm: f, people: new Map() });
-  
-  const now = Date.now();
-  let hiddenOldOffers = 0;
-  const orderedCodes = getOrderedCodesPool();
 
+  const now = Date.now();
+  const orderedCodes = getOrderedCodesPool();
+  const canceledCodes = getCanceledCodesPool();
+  const latestOrderTime = getLatestOrderMailTimeMs();
+  let offersDirty = false;
+  let historyDirty = false;
+
+  let countAll = 0;
+  let countWon = 0;
+  let countLost = 0;
+  let countWait = 0;
+
+  // Önce tüm isteklerin otomatik Kazanıldı (Yeşil) / Kalmadı (Kırmızı) durumlarını değerlendir
   for (const r of state.requests) {
+    let pricedCount = 0;
+    let wonCount = 0;
+    let cancelCount = 0;
+    for (const it of r.items) {
+      if (priceOf(r, it) != null) pricedCount++;
+      if (isItemOrdered(r, it, orderedCodes)) wonCount++;
+      if (isItemCanceled(r, it, canceledCodes)) cancelCount++;
+    }
+
+    const isDirectOrder = r.mails.some(isOrderMail);
+    const isDirectCancel = r.mails.some(isCancelMail);
+    let offer = state.offers[r.id];
+
+    const reqTime = parseMailDateMs(r.date, r.requestTag);
+    const refTime = offer?.at ? Date.parse(offer.at) || reqTime : reqTime;
+    const ageHours = refTime > 0 ? (now - refTime) / (1000 * 60 * 60) : 0;
+    const deadlineMs = parseMailDateMs(r.deadline, null);
+    const deadlinePassed = deadlineMs > 0 && now > deadlineMs + 4 * 60 * 60 * 1000;
+    const newerOrderArrived = latestOrderTime > 0 && refTime > 0 && latestOrderTime > refTime + 2 * 60 * 60 * 1000;
+
+    if (!offer?.manual) {
+      if (isDirectOrder || wonCount > 0) {
+        // SİP / EBA onayı geldi -> YEŞİL (Kazanıldı)
+        if (!offer) {
+          offer = state.offers[r.id] = { path: "", at: new Date(refTime || now).toISOString(), result: "won", manual: false };
+          offersDirty = true;
+        } else if (offer.result !== "won") {
+          offer.result = "won";
+          offersDirty = true;
+        }
+      } else if (isDirectCancel || (cancelCount > 0 && pricedCount > 0)) {
+        // İptal maili geldi -> KIRMIZI (Kalmadı)
+        if (!offer) {
+          offer = state.offers[r.id] = { path: "", at: new Date(refTime || now).toISOString(), result: "lost", manual: false };
+          offersDirty = true;
+        } else if (offer.result !== "lost") {
+          offer.result = "lost";
+          offersDirty = true;
+        }
+      } else if (offer || pricedCount > 0) {
+        // Fiyat verilmiş / teklif hazırlanmış ama SİP'te çıkmamış:
+        // Üzerinden ~18 saat (1 gün) geçtiyse, son teklif tarihi geçtiyse veya daha yeni SİP mailleri geldiyse -> KIRMIZI (Kalmadı)
+        if (ageHours >= 18 || deadlinePassed || newerOrderArrived) {
+          if (!offer) {
+            offer = state.offers[r.id] = { path: "", at: new Date(refTime || now).toISOString(), result: "lost", manual: false };
+            offersDirty = true;
+          } else if (offer.result !== "lost") {
+            offer.result = "lost";
+            offersDirty = true;
+          }
+        }
+      }
+    }
+
+    // Kalem bazında sonuçları kalıcı fiyat hafızasına işle (Önceki Fiyat sütununda 🟢 / 🔴 görünmesi için)
+    for (const it of r.items) {
+      const hKey = `${r.id}|${normalizeCodeStr(it.code)}`;
+      const hEntry = state.history[hKey];
+      if (hEntry) {
+        const itemRes: Result = isItemOrdered(r, it, orderedCodes)
+          ? "won"
+          : offer?.result === "lost" || wonCount > 0
+            ? "lost"
+            : offer?.result ?? null;
+        if (hEntry.result !== itemRes) {
+          hEntry.result = itemRes;
+          historyDirty = true;
+        }
+      }
+    }
+
+    countAll++;
+    if (offer?.result === "won") countWon++;
+    else if (offer?.result === "lost") countLost++;
+    else countWait++;
+
+    // Sol menü filtre kontrolü (Varsayılan: "all" -> HİÇBİR MAIL GİZLENMEZ VEYA SİLİNMEZ)
+    if (sidebarFilter === "won" && offer?.result !== "won") continue;
+    if (sidebarFilter === "lost" && offer?.result !== "lost") continue;
+    if (sidebarFilter === "wait" && (offer?.result === "won" || offer?.result === "lost")) continue;
+
     const key = firmKey(r);
     if (!groups.has(key)) groups.set(key, { title: `${suggestFirmName(r.sender.address, r.sender.name)} (izin listesinde yok)`, firm: null, people: new Map() });
-    
+
     const personName = r.sender.name.trim() || r.sender.address;
     const peopleMap = groups.get(key)!.people;
     if (!peopleMap.has(personName)) peopleMap.set(personName, []);
     peopleMap.get(personName)!.push(r);
   }
 
-  let html = "";
-  if (!groups.size) html = `<h4>Firmalar</h4><div class="empty">Henüz teklif isteği yok.</div>`;
+  if (offersDirty) persist("offers", 300);
+  if (historyDirty) persist("history", 500);
+
+  let html = `<div class="side-filters">
+    <button class="side-fbtn ${sidebarFilter === "all" ? "active" : ""}" data-sfilt="all" title="Tüm mailler ve teklifler (Hiçbiri silinmez)">Tümü (${countAll})</button>
+    <button class="side-fbtn ${sidebarFilter === "won" ? "active" : ""}" data-sfilt="won" title="EBA / SİP onaylanan yeşil teklifler">🟢 SİP (${countWon})</button>
+    <button class="side-fbtn ${sidebarFilter === "lost" ? "active" : ""}" data-sfilt="lost" title="Onaylanmayan / kalmayan kırmızı teklifler">🔴 Kalmadı (${countLost})</button>
+    <button class="side-fbtn ${sidebarFilter === "wait" ? "active" : ""}" data-sfilt="wait" title="Açık / sonuç bekleyen teklifler">⏳ Açık (${countWait})</button>
+  </div>`;
+
+  if (!groups.size) html += `<h4>Firmalar</h4><div class="empty">Henüz teklif isteği yok.</div>`;
   for (const [key, g] of groups) {
     html += `<h4 class="firm-title" style="cursor:pointer; user-select:none;">${esc(g.title)} <span class="arrow" style="float:right;">▼</span></h4>`;
     html += `<div class="firm-reqs" style="display:block;">`;
-    
+
     const sortedPeople = Array.from(g.people.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    
+
     if (!sortedPeople.length) {
-      html += `<div class="req"><small>Teklif isteği yok</small></div>`;
+      html += `<div class="req"><small>Bu filtrede kayıt yok</small></div>`;
     }
-    
+
     for (const [personName, reqs] of sortedPeople) {
-       html += `<div style="padding: 4px 8px; font-weight: bold; font-size: 11px; color: var(--ac); margin-top: 4px; border-top: 1px solid var(--bd);">👤 ${esc(personName)}</div>`;
-       for (const r of reqs) {
-          const offer = state.offers[r.id];
-          
-          // EBA'dan veya Tuğçe'den gelen SİP / SİB / Açık Sipariş Sorgusu maillerinde bu parçalar var mı?
-          const isDirectOrderMail = r.mails.some(m => ORDER_RE.test(m.subject));
-          const hasMatchingOrder = r.items.some(it => {
-            const norm = normalizeCodeStr(it.code);
-            if (orderedCodes.has(norm)) return true;
-            const nums = it.code.match(/\b\d{5,12}\b/g);
-            return nums ? nums.some(n => orderedCodes.has(n)) : false;
-          });
+      html += `<div style="padding: 4px 8px; font-weight: bold; font-size: 11px; color: var(--ac); margin-top: 4px; border-top: 1px solid var(--bd);">👤 ${esc(personName)}</div>`;
+      for (const r of reqs) {
+        const offer = state.offers[r.id];
+        const isDirectOrder = r.mails.some(isOrderMail);
 
-          if ((isDirectOrderMail || hasMatchingOrder) && offer && !offer.result) {
-            offer.result = "won";
-            persist("offers");
+        let offerTotal = 0;
+        let pricedCount = 0;
+        let wonCount = 0;
+        for (const it of r.items) {
+          const p = priceOf(r, it);
+          if (p != null) {
+            pricedCount++;
+            if (it.qty != null) offerTotal += p * it.qty;
           }
+          if (isItemOrdered(r, it, orderedCodes)) wonCount++;
+        }
 
-          // KULLANICI KURALI: Teklifi henüz VERİLMEMİŞ (hazırlanmamış) mailler ASLA gizlenmez!
-          // Sadece teklifi verilmiş ve üzerinden 24 saat geçmişler onay kutusuyla gizlenebilir.
-          const isOld = offer && (now - new Date(offer.at).getTime() > 24 * 60 * 60 * 1000);
-          if (isOld && !showOldOffers && r.id !== state.selectedRequest) {
-            hiddenOldOffers++;
-            continue;
-          }
+        const ready = r.items.filter((i) => i.status === "ready").length;
+        const parts = !r.partTotal || !r.partsReceived.length
+          ? `${r.mails.length} e-posta${r.partTotal ? ` (${r.partTotal} parçalık istek)` : ""}`
+          : r.partsReceived.length >= r.partTotal
+            ? `Parça 1–${r.partTotal} birleşti`
+            : `Parça ${r.partsReceived.join(", ")} / ${r.partTotal} geldi`;
 
-          // Teklif toplam tutarı
-          let offerTotal = 0;
-          for (const it of r.items) {
-            const p = priceOf(r, it);
-            if (p != null && it.qty != null) {
-              offerTotal += p * it.qty;
-            }
-          }
+        const dayStr = dayOf(r.requestTag ?? "") ?? dayOf(r.date) ?? "";
+        const bits = [dayStr, parts, `${ready}/${r.items.length} çizim`].filter(Boolean);
+        if (r.deadline) bits.push(`son: ${r.deadline.replace(/\.\d{4}/, "")}`);
 
-          const ready = r.items.filter((i) => i.status === "ready").length;
-          const parts = !r.partTotal || !r.partsReceived.length
-            ? `${r.mails.length} e-posta${r.partTotal ? ` (${r.partTotal} parçalık istek)` : ""}`
-            : r.partsReceived.length >= r.partTotal
-              ? `Parça 1–${r.partTotal} birleşti`
-              : `Parça ${r.partsReceived.join(", ")} / ${r.partTotal} geldi`;
-          
-          const bits = [parts, `${ready}/${r.items.length} çizim`];
-          if (r.deadline) bits.push(`son tarih ${r.deadline.replace(/\.\d{4}/, "")}`);
-          
-          let resultBadge = "";
-          let totalSpan = "";
-          if (offer) {
-            const isWon = offer.result === "won";
-            const isLost = offer.result === "lost";
-            if (offerTotal > 0) {
-              totalSpan = `<span class="${isWon ? "offer-total-won" : isLost ? "offer-total-lost" : ""}" style="font-size:12px;">${formatMoney(offerTotal)} ₺</span>`;
-            }
-            if (isWon) resultBadge = `<span class="badge-won">✅ Kazanıldı</span>`;
-            else if (isLost) resultBadge = `<span class="badge-lost">❌ Kaybedildi</span>`;
-          }
+        const isWon = offer?.result === "won";
+        const isLost = offer?.result === "lost";
+        let resultBadge = "";
+        let totalSpan = "";
 
-          const band = offer?.result === "won" ? "won" : offer?.result === "lost" ? "lost" : "";
-          html += `<div class="req ${r.id === state.selectedRequest ? "on" : ""} ${band}" data-req="${esc(r.id)}">
-            <button class="btn-rm" data-rmreq="${esc(r.id)}" title="Gizle/Sil">×</button>
-            <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-              <b>${esc(requestTitle(r))}</b>
-              ${resultBadge}
-            </div>
-            <small>${esc(bits.join(" · "))}</small>
-            ${offer ? `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:3px;">
-              <small class="ok">Teklif hazırlandı ✓ ${totalSpan}</small>
-              <select class="res ${offer.result === "won" ? "res-won" : offer.result === "lost" ? "res-lost" : ""}" data-res="${esc(r.id)}">
-                <option value="" ${!offer.result ? "selected" : ""}>Sonuç: bekleniyor</option>
-                <option value="won" ${offer.result === "won" ? "selected" : ""}>Kazanıldı</option>
-                <option value="lost" ${offer.result === "lost" ? "selected" : ""}>Kaybedildi</option>
-              </select>
-            </div>` : ""}`;
-          html += `</div>`;
-       }
+        if (offerTotal > 0) {
+          totalSpan = `<span class="${isWon ? "offer-total-won" : isLost ? "offer-total-lost" : ""}" style="font-size:12px;">${formatMoney(offerTotal)} ₺</span>`;
+        }
+
+        if (isDirectOrder) {
+          resultBadge = `<span class="badge-won">📦 EBA/SİP</span>`;
+        } else if (isWon) {
+          resultBadge = `<span class="badge-won">✅ ${wonCount > 0 && wonCount < r.items.length ? `${wonCount} SİP` : "Kazanıldı"}</span>`;
+        } else if (isLost) {
+          resultBadge = `<span class="badge-lost">❌ Kalmadı</span>`;
+        } else if (pricedCount > 0) {
+          resultBadge = `<span class="badge-wait">${pricedCount} fiyatlı</span>`;
+        }
+
+        const band = isWon ? "won" : isLost ? "lost" : "";
+        const showStatusRow = Boolean(offer || pricedCount > 0 || isDirectOrder);
+        const statusLabelText = isDirectOrder
+          ? "Sipariş / EBA Maili ✓"
+          : offer?.path
+            ? "Teklif hazırlandı ✓"
+            : pricedCount > 0
+              ? `Fiyat verildi (${pricedCount}/${r.items.length})`
+              : "Durum";
+
+        html += `<div class="req ${r.id === state.selectedRequest ? "on" : ""} ${band}" data-req="${esc(r.id)}">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:4px;">
+            <b>${esc(requestTitle(r))}</b>
+            ${resultBadge}
+          </div>
+          <small>${esc(bits.join(" · "))}</small>
+          ${showStatusRow ? `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:3px; gap:4px;">
+            <small class="${isLost ? "err" : "ok"}">${statusLabelText} ${totalSpan}</small>
+            <select class="res ${isWon ? "res-won" : isLost ? "res-lost" : ""}" data-res="${esc(r.id)}">
+              <option value="" ${!offer?.result ? "selected" : ""}>Bekleniyor</option>
+              <option value="won" ${isWon ? "selected" : ""}>Kazanıldı (Yeşil)</option>
+              <option value="lost" ${isLost ? "selected" : ""}>Kalmadı (Kırmızı)</option>
+            </select>
+          </div>` : ""}`;
+        html += `</div>`;
+      }
     }
-    
+
     html += `</div>`;
     const hasAnyReq = Array.from(g.people.values()).some((arr) => arr.length > 0);
     if (!g.firm && hasAnyReq) {
@@ -987,45 +1605,28 @@ function renderSidebar(): void {
     }
   }
 
-  if (hiddenOldOffers > 0 || showOldOffers) {
-    html += `<div style="padding: 8px 12px; font-size: 11px; color: var(--mu); border-top: 1px solid var(--bd); margin-top: 8px;">
-      <label style="cursor: pointer; display: flex; align-items: center; gap: 6px;">
-        <input type="checkbox" id="chk-old-offers" ${showOldOffers ? "checked" : ""}> 1 günden eski teklifleri göster (${hiddenOldOffers} gizli)
-      </label>
-    </div>`;
-  }
-
   $("firms").innerHTML = html;
-  
-  const chkOld = $<HTMLInputElement>("chk-old-offers");
-  if (chkOld) {
-    chkOld.onchange = () => {
-      showOldOffers = chkOld.checked;
-      renderSidebar();
-    };
-  }
   $("arch").textContent = `Arşiv: ${state.settings.archiveRoot}`;
 }
 
 function onSidebarClick(e: MouseEvent): void {
   const t = e.target as HTMLElement;
-  const rm = t.closest<HTMLElement>("[data-rmreq]");
-  if (rm) {
-    e.stopPropagation();
-    const req = state.requests.find((r) => r.id === rm.dataset.rmreq);
-    if (req && confirm("Bu isteği listeden kaldırmak istediğinize emin misiniz?")) removeRequest(req);
+  const filtBtn = t.closest<HTMLElement>("[data-sfilt]");
+  if (filtBtn) {
+    sidebarFilter = (filtBtn.dataset.sfilt as SidebarFilter) || "all";
+    renderSidebar();
     return;
   }
   const firmTitle = t.closest(".firm-title");
   if (firmTitle) {
-      const reqsDiv = firmTitle.nextElementSibling as HTMLElement;
-      if (reqsDiv) {
-          const isHidden = reqsDiv.style.display === "none";
-          reqsDiv.style.display = isHidden ? "block" : "none";
-          const arrow = firmTitle.querySelector(".arrow");
-          if (arrow) arrow.textContent = isHidden ? "▼" : "▶";
-      }
-      return;
+    const reqsDiv = firmTitle.nextElementSibling as HTMLElement;
+    if (reqsDiv) {
+      const isHidden = reqsDiv.style.display === "none";
+      reqsDiv.style.display = isHidden ? "block" : "none";
+      const arrow = firmTitle.querySelector(".arrow");
+      if (arrow) arrow.textContent = isHidden ? "▼" : "▶";
+    }
+    return;
   }
 
   if (t.closest("select")) return;
@@ -1053,11 +1654,13 @@ function onSidebarChange(e: Event): void {
   const sel = (e.target as HTMLElement).closest<HTMLSelectElement>("select[data-res]");
   if (!sel) return;
   const id = sel.dataset.res!;
-  const offer = state.offers[id];
-  if (!offer) return;
-  offer.result = (sel.value || null) as Result;
+  const val = (sel.value || null) as Result;
+  const offer = (state.offers[id] ??= { path: "", at: new Date().toISOString(), result: val, manual: true });
+  offer.result = val;
+  offer.manual = Boolean(val);
   persist("offers");
   backend.recordResult(id, offer.result).catch((err) => console.warn(err));
+  renderAll();
 }
 
 // ---------------------------------------------------------------- orta bölme
@@ -1075,6 +1678,10 @@ function renderMid(): void {
     return;
   }
 
+  const orderedCodes = getOrderedCodesPool();
+  const offer = state.offers[req.id];
+  const reqHasAnySipMatch = req.items.some((it) => isItemOrdered(req, it, orderedCodes));
+
   const qc = req.qtyCol;
   const dc = descCol(req);
   // Gizlenen sütunlar (başlık adına göre, tüm isteklerde geçerli)
@@ -1083,25 +1690,37 @@ function renderMid(): void {
     const h = req.headers[c];
     return `<th class="${c === qc ? "n" : ""}" data-col="${esc(h)}" data-hideable="1" title="${esc(h)} — sağ tık: gizle"><span class="th-l">${esc(h)}</span><button class="th-x" data-hide="${esc(h)}" title="Sütunu gizle">×</button></th>`;
   }).join("");
+
   const rows = req.items.map((it) => {
+    const isWonItem = isItemOrdered(req, it, orderedCodes) || (offer?.result === "won" && !reqHasAnySipMatch && priceOf(req, it) != null);
+    const isLostItem = !isWonItem && priceOf(req, it) != null && (offer?.result === "lost" || reqHasAnySipMatch);
+    const rowStateCls = isWonItem ? "row-won" : isLostItem ? "row-lost" : "";
+    const sipBadge = isWonItem
+      ? `<span class="sip-tag-won" title="EBA / SİP siparişi onaylandı (Tıkla: durumu değiştir)" data-toggle-item="${it.index}">✅ SİP</span>`
+      : isLostItem
+        ? `<span class="sip-tag-lost" title="Siparişe dönüşmedi / Kalmadı (Tıkla: durumu değiştir)" data-toggle-item="${it.index}">❌ Kalmadı</span>`
+        : "";
+
     const cells = visible.map((c) => {
       const v = it.cells[c] ?? "";
-      if (c === req.codeCol) return `<td class="code" title="${esc(v)}"><span class="dot ${it.status}" title="${statusLabel(it)}"></span>${esc(v)}</td>`;
+      if (c === req.codeCol) return `<td class="code" title="${esc(v)}"><span class="dot ${it.status}" title="${statusLabel(it)}"></span>${esc(v)}${sipBadge}</td>`;
       if (c === dc) return `<td class="desc" title="${esc(v)}">${esc(v)}</td>`;
       return `<td class="${c === qc ? "n" : ""}" title="${esc(v)}">${esc(v)}</td>`;
     }).join("");
     const pt = priceText(req, it);
     const bad = pt && parsePrice(pt) == null;
-    return `<tr class="row ${it.index === state.selectedItem ? "sel" : ""}" data-i="${it.index}">${cells}
+    return `<tr class="row ${rowStateCls} ${it.index === state.selectedItem ? "sel" : ""}" data-i="${it.index}">${cells}
       <td class="n stk stk-first" data-stk="2" id="pv${it.index}">${prevCellHtml(req, it)}</td>
       <td class="n stk" data-stk="1"><input data-i="${it.index}" value="${esc(pt)}" inputmode="decimal" placeholder="—" ${bad ? 'style="border-color:var(--er)"' : ""}></td>
       <td class="n tot stk" data-stk="0" id="t${it.index}">${totalText(req, it)}</td></tr>`;
   }).join("");
 
   const notes: string[] = [];
-  const offer = state.offers[req.id];
   if (offer && offer.result === "won") {
-    notes.push(`<div class="won-banner">✅ <b>SİPARİŞ ONAYLANDI:</b> Bu teklif kazanıldı ve işleme girmelidir.</div>`);
+    const wonCnt = req.items.filter((it) => isItemOrdered(req, it, orderedCodes)).length;
+    notes.push(`<div class="won-banner">✅ <b>SİPARİŞ ONAYLANDI (YEŞİL):</b> ${wonCnt > 0 ? `Bu teklifteki <b>${wonCnt} kalem</b> EBA / SİP sipariş listesinde onaylandı (yeşil satırlar).` : "Bu teklif kazanıldı ve işleme girmelidir."}</div>`);
+  } else if (offer && offer.result === "lost") {
+    notes.push(`<div class="lost-banner">❌ <b>KALMADI / KAYBEDİLDİ (KIRMIZI):</b> Bu teklifteki kalemler için SİP onayı gelmedi.</div>`);
   }
   const waiting = req.items.filter((i) => i.status === "waiting").length;
   if (req.partTotal && req.partsReceived.length && req.partsReceived.length < req.partTotal) {
@@ -1143,15 +1762,25 @@ function renderMid(): void {
     </div>
     <div class="tw ${twCls}"><table><thead><tr>${head}<th class="n new stk stk-first" data-stk="2" data-col="__prev">Önceki</th><th class="n new stk" data-stk="1" data-col="__price">Birim Fiyat</th><th class="n new stk" data-stk="0" data-col="__total">Toplam</th></tr></thead>
     <tbody id="tb">${rows}</tbody></table></div>
-    <p class="mu">Satırın üzerine gelince sağda çizim önizlemesi büyür, çift tıkla tam ekran açılır.</p>
+    <p class="mu">Satırın üzerine gelince sağda çizim önizlemesi büyür, çift tıkla tam ekran açılır. · Kalıcı hafıza aktif (hiçbir mail veya fiyat silinmez).</p>
     ${notes.map((n) => `<div class="note">${n}</div>`).join("")}
-    <p class="mu">Gönderen: ${esc([...new Set(src)].join(", "))} · <a href="#" id="rm">Bu isteği listeden kaldır</a></p>`;
+    <p class="mu">Gönderen: ${esc([...new Set(src)].join(", "))}</p>`;
 
   mid.querySelectorAll<HTMLElement>("[data-um]").forEach((a) => (a.onclick = () => showFullPage(req.unmatchedDrawings[Number(a.dataset.um)])));
-  $("rm").onclick = (e) => {
-    e.preventDefault();
-    removeRequest(req);
-  };
+  mid.querySelectorAll<HTMLElement>("[data-toggle-item]").forEach((badge) => {
+    badge.onclick = (e) => {
+      e.stopPropagation();
+      const idx = Number(badge.dataset.toggleItem);
+      const it = req.items[idx];
+      if (!it) return;
+      const mKey = `${req.id}|${normalizeCodeStr(it.code)}`;
+      const map = (state.orders.itemResults ??= {});
+      const cur = map[mKey];
+      map[mKey] = cur === "won" ? "lost" : cur === "lost" ? null : "won";
+      persist("orders");
+      renderAll();
+    };
+  });
   
   // Sütun Checkbox Dropdown Olayları
   const btnColToggle = $("btn-col-toggle");
@@ -1284,10 +1913,13 @@ function renderRight(focusPrice = false): void {
     ? "Çizim bekleniyor — diğer parça gelince otomatik eşleşir."
     : "Bu kalemin çizimi e-postalarda yok.";
     
-  const prev = getPreviousPrice(req, item.code);
+  const prev = getPreviousPrice(req, item.code, item.cells[dc] ?? "");
   let prevText = "";
   if (prev) {
-    prevText = `<div class="b-prev" style="margin-top:10px; color:var(--wa); font-weight:600">Önceki Fiyat: ${formatMoney(prev.price)} TL (${new Date(prev.date).toLocaleDateString("tr-TR")})</div>`;
+    const dtStr = new Date(prev.date).toLocaleDateString("tr-TR");
+    const cntStr = prev.count && prev.count > 1 ? ` · ${prev.count} geçmiş kayıt` : "";
+    const resStr = prev.result === "won" ? " · ✅ SİP Onaylı" : prev.result === "lost" ? " · ❌ Kalmadı" : "";
+    prevText = `<div class="b-prev" style="margin-top:10px; color:var(--wa); font-weight:600">Önceki Fiyat: ${formatMoney(prev.price)} TL (${dtStr}${prev.firm ? ` · ${esc(prev.firm)}` : ""}${cntStr}${resStr})</div>`;
   }
 
   rp.innerHTML = `<h3>${esc(item.code)}</h3><div class="mu">${esc(dc !== req.codeCol ? item.cells[dc] ?? "" : "")}</div>
@@ -1620,8 +2252,14 @@ async function prepareOffer(): Promise<void> {
     $("cl").onclick = closeModal;
     return;
   }
-  state.offers[req.id] = { path, at: new Date().toISOString(), result: state.offers[req.id]?.result ?? null };
+  state.offers[req.id] = {
+    path,
+    at: new Date().toISOString(),
+    result: state.offers[req.id]?.result ?? null,
+    manual: state.offers[req.id]?.manual ?? false,
+  };
   persist("offers");
+  syncMemoryFromCurrentState();
   renderSidebar();
   recordData(req, path).catch((e) => console.warn("veri kaydı yapılamadı", e));
 
@@ -1653,6 +2291,177 @@ async function prepareOffer(): Promise<void> {
   $("nm").onclick = () => backend.openUrl(gmailComposeUrl({ to: req.sender.address, subject, account })).catch((e) => toast(errText(e)));
 }
 
+// ---------------------------------------------------------------- Fiyat & SİP Hafızası
+
+async function openMemoryModal(): Promise<void> {
+  let query = "";
+  const draw = () => {
+    const pool = getOrderedCodesPool();
+    const allItems = Object.values(state.history).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const q = normTr(query.trim());
+    const filtered = !q
+      ? allItems
+      : allItems.filter((it) =>
+          normTr(it.code).includes(q) ||
+          normTr(it.description || "").includes(q) ||
+          normTr(it.firm || "").includes(q) ||
+          normTr(it.subject || "").includes(q)
+        );
+
+    const rowsHtml = filtered.slice(0, 300).map((it) => {
+      const codeNorm = normalizeCodeStr(it.code);
+      const baseNorm = baseCodeKey(codeNorm);
+      const isSip =
+        it.result === "won" ||
+        pool.has(codeNorm) ||
+        (baseNorm.length >= 5 && pool.has(baseNorm)) ||
+        extractTokens(it.code + " " + (it.description || "")).some((t) => t.length >= 6 && pool.has(t));
+      const isLost = !isSip && (it.result === "lost" || state.offers[it.requestId]?.result === "lost");
+      const dt = it.date ? new Date(it.date).toLocaleDateString("tr-TR") : "—";
+      const srcLabel =
+        it.source === "archive"
+          ? "Excel Arşivi"
+          : it.source === "kalemler"
+            ? "Kayıtlı Kalem"
+            : it.source === "offer"
+              ? "Teklif"
+              : "Canlı Hafıza";
+      return `<tr class="${isSip ? "row-won" : isLost ? "row-lost" : ""}" title="${esc(it.subject || it.requestId)}">
+        <td><b>${esc(it.code)}</b></td>
+        <td>${esc(it.description || "—")}</td>
+        <td style="text-align:right;font-weight:700;color:var(--wa)">${formatMoney(it.price)} ₺</td>
+        <td>${esc(dt)}</td>
+        <td>${esc(it.firm || "—")}</td>
+        <td>${isSip ? `<span class="sip-tag-won">✅ SİP Onaylı</span>` : isLost ? `<span class="sip-tag-lost">❌ Kalmadı</span>` : `<span class="mu">—</span>`}</td>
+        <td style="text-align:center"><span class="b">${srcLabel}</span></td>
+      </tr>`;
+    }).join("");
+
+    const box = openModal(`<div class="mhead">
+        <h3>🧠 Kalıcı Fiyat & SİP Hafıza Merkezi</h3>
+        <div style="display:flex;gap:6px">
+          <button class="btn sm p" id="mem-rescan">🔄 Arşivi & Kayıtları Yeniden Tara</button>
+          <button class="btn sm" id="mem-close">Kapat</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px">
+        <div style="padding:8px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+          <div class="mu" style="font-size:11px">Hafızadaki Parça Fiyatı</div>
+          <div style="font-size:16px;font-weight:700;color:var(--wa)">${allItems.length} kayıt</div>
+        </div>
+        <div style="padding:8px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+          <div class="mu" style="font-size:11px">Kayıtlı Mail & Teklif İsteği</div>
+          <div style="font-size:16px;font-weight:700">${state.mails.size} mail / ${state.requests.length} istek</div>
+        </div>
+        <div style="padding:8px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+          <div class="mu" style="font-size:11px">Hazırlanan Teklifler</div>
+          <div style="font-size:16px;font-weight:700">${Object.keys(state.offers).length} teklif</div>
+        </div>
+        <div style="padding:8px 10px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+          <div class="mu" style="font-size:11px">EBA / SİP Sipariş Havuzu</div>
+          <div style="font-size:16px;font-weight:700;color:var(--ok)">${pool.size} kod</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
+        <input type="text" id="mem-search" value="${esc(query)}" placeholder="Malzeme kodu, parça tanımı veya firma ara..." style="flex:1;padding:7px 10px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px">
+        <button class="btn sm" id="mem-add-toggle">➕ Manuel Fiyat Ekle</button>
+      </div>
+      <div id="mem-add-box" style="display:none;padding:10px;margin-bottom:10px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+        <div style="font-weight:700;font-size:11.5px;margin-bottom:6px">Hafızaya Manuel Parça Fiyatı Kaydet</div>
+        <div style="display:grid;grid-template-columns:1.2fr 1.5fr 0.8fr 1fr auto;gap:6px">
+          <input type="text" id="mem-in-code" placeholder="Malzeme Kodu (örn: FU00314268/B-03)" style="padding:5px 8px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:4px">
+          <input type="text" id="mem-in-desc" placeholder="Malzeme Tanımı" style="padding:5px 8px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:4px">
+          <input type="text" id="mem-in-price" placeholder="Birim Fiyat (₺)" style="padding:5px 8px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:4px">
+          <input type="text" id="mem-in-firm" placeholder="Firma (örn: Etimakine)" value="Etimakine" style="padding:5px 8px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:4px">
+          <button class="btn sm p" id="mem-in-save">Kaydet</button>
+        </div>
+      </div>
+      <div style="overflow:auto;max-height:52vh;border:1px solid var(--bd);border-radius:6px">
+        <table class="xl" style="margin:0">
+          <thead>
+            <tr>
+              <th>Malzeme Kodu</th>
+              <th>Malzeme Tanımı</th>
+              <th style="text-align:right">Birim Fiyat</th>
+              <th>Tarih</th>
+              <th>Firma</th>
+              <th>EBA / SİP Durumu</th>
+              <th style="text-align:center">Kaynak</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml || `<tr><td colspan="7" class="mu" style="text-align:center;padding:20px">Eşleşen fiyat kaydı bulunamadı.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <div class="mu" style="margin-top:8px;font-size:11px">
+        Toplam ${filtered.length} kayıt listeleniyor (hiçbir fiyat veya mail silinmez; Teklif Arşivi klasöründeki tüm Excel dosyaları otomatik taranır).
+      </div>`);
+
+    $("mem-close").onclick = closeModal;
+    const searchInp = $<HTMLInputElement>("mem-search");
+    searchInp.oninput = () => {
+      query = searchInp.value;
+      const pos = searchInp.selectionStart ?? query.length;
+      draw();
+      const nextInp = $<HTMLInputElement>("mem-search");
+      if (nextInp) {
+        nextInp.focus();
+        nextInp.setSelectionRange(pos, pos);
+      }
+    };
+    $("mem-add-toggle").onclick = () => {
+      const ab = $("mem-add-box");
+      if (ab) ab.style.display = ab.style.display === "none" ? "block" : "none";
+    };
+    $("mem-in-save").onclick = () => {
+      const code = $<HTMLInputElement>("mem-in-code").value.trim();
+      const desc = $<HTMLInputElement>("mem-in-desc").value.trim();
+      const priceVal = parsePrice($<HTMLInputElement>("mem-in-price").value);
+      const firm = $<HTMLInputElement>("mem-in-firm").value.trim() || "Manuel";
+      if (!code || priceVal == null || priceVal <= 0) {
+        toast("Lütfen geçerli bir malzeme kodu ve birim fiyat girin.");
+        return;
+      }
+      const norm = normalizeCodeStr(code);
+      const rId = `manual:${todayDotted()}`;
+      upsertPriceMemory(
+        {
+          id: `${rId}|${norm}`,
+          requestId: rId,
+          code,
+          normCode: norm,
+          key: codeKey(code) ?? norm,
+          baseKey: baseCodeKey(code),
+          description: desc,
+          qty: 1,
+          price: priceVal,
+          date: new Date().toISOString(),
+          firm,
+          subject: "Manuel Hafıza Kaydı",
+          result: null,
+          source: "live",
+        },
+        true,
+      );
+      toast(`${code} hafızaya kaydedildi (${formatMoney(priceVal)} ₺).`);
+      draw();
+      renderAll();
+    };
+    $("mem-rescan").onclick = async () => {
+      const btn = $<HTMLButtonElement>("mem-rescan");
+      btn.disabled = true;
+      btn.textContent = "Taranıyor...";
+      await syncExternalMemory();
+      renderAll();
+      draw();
+      toast("Teklif Arşivi ve kayıtlı kalemler hafızayla eşitlendi.");
+    };
+    void box;
+  };
+  draw();
+}
+
 // ---------------------------------------------------------------- ayarlar
 
 async function openSettings(): Promise<void> {
@@ -1680,13 +2489,13 @@ async function openSettings(): Promise<void> {
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:8px;">
         <div>
           <label>Teklif İstekleri Gün Sayısı (Tuğçe vb.)</label>
-          <input type="number" id="sdays" min="1" max="60" value="${s.gmailDays}">
-          <div class="mu" style="font-size:11px; margin-top:2px;">Ağır PDF çizimleri için 1-3 gün önerilir.</div>
+          <input type="number" id="sdays" min="1" max="365" value="${s.gmailDays || 60}">
+          <div class="mu" style="font-size:11px; margin-top:2px;">Önceki tekliflerin eksiksiz gelmesi için 60-90 gün önerilir (indirilen mailler kalıcı hafızada saklanır, silinmez).</div>
         </div>
         <div>
           <label>Sipariş / SİP / EBA Gün Sayısı</label>
-          <input type="number" id="sorderdays" min="1" max="180" value="${s.gmailOrderDays || 30}">
-          <div class="mu" style="font-size:11px; margin-top:2px;">Kazanılanları yakalamak için 30-45 gün önerilir.</div>
+          <input type="number" id="sorderdays" min="1" max="365" value="${s.gmailOrderDays || 90}">
+          <div class="mu" style="font-size:11px; margin-top:2px;">EBA / SİP sipariş onaylarını yakalamak için 90 gün önerilir.</div>
         </div>
       </div>
       <label style="margin-top:10px;"><input type="checkbox" id="sauto" ${auto ? "checked" : ""} ${backend.inTauri ? "" : "disabled"}> Bilgisayar açılınca başlat</label>
@@ -1734,12 +2543,13 @@ async function openSettings(): Promise<void> {
       sync();
       s.firms = draft.filter((f) => f.name.trim() || f.match.length).map((f) => ({ ...f, name: f.name.trim() || suggestFirmName(f.match[0] ?? "") }));
       s.archiveRoot = archive.trim() || s.archiveRoot;
-      s.gmailDays = Math.max(1, Math.min(60, Number($<HTMLInputElement>("sdays").value) || 2));
-      s.gmailOrderDays = Math.max(1, Math.min(180, Number($<HTMLInputElement>("sorderdays").value) || 30));
+      s.gmailDays = Math.max(1, Math.min(365, Number($<HTMLInputElement>("sdays").value) || 60));
+      s.gmailOrderDays = Math.max(1, Math.min(365, Number($<HTMLInputElement>("sorderdays").value) || 90));
       const wantAuto = $<HTMLInputElement>("sauto").checked;
       if (wantAuto !== auto) await backend.setAutostart(wantAuto).catch((e) => toast(`Açılışta başlatma ayarlanamadı: ${errText(e)}`));
       persist("settings");
       closeModal();
+      await syncExternalMemory();
       renderAll();
     };
   };
@@ -1801,6 +2611,8 @@ async function init(): Promise<void> {
   $("gm").onclick = () => backend.openUrl("https://mail.google.com");
   $("load").onclick = loadClick;
   $("settings").onclick = openSettings;
+  const memBtn = document.getElementById("memory-btn");
+  if (memBtn) memBtn.onclick = openMemoryModal;
   $("prep").onclick = prepareOffer;
   $("firms").addEventListener("click", onSidebarClick);
   $("firms").addEventListener("change", onSidebarChange);
@@ -1828,6 +2640,7 @@ async function init(): Promise<void> {
   gmail = await backend.gmailStatus().catch(() => gmail);
   renderAll();
   await restoreSession();
+  await syncExternalMemory();
   renderAll();
   if (gmail.connected) {
     gmailRefresh(true);

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { codeKey, drawingKey, groupMails, isItemCode, isMatch, parseEml } from "../src/eml";
+import { baseCodeKey, codeKey, drawingKey, extractTokens, groupMails, isItemCode, isMatch, normTr, parseEml } from "../src/eml";
+import { senderMatches } from "../src/state";
 
 // ---------- Sentetik mail üretici ----------
 
@@ -60,6 +61,44 @@ describe("kod ve çizim anahtarı", () => {
     expect(isItemCode("FTM30005458")).toBe(true);
     expect(isMatch("FE026BF3736", "E026BF3736.pdf")).toBe(true);
     expect(isMatch("FE026BF3736", "BFBY2026.01.306.pdf", "TIA KRSLMA TKZU BFBY2026.01.306_MF")).toBe(true);
+  });
+
+  it("EBA / SİP sipariş kodlarını ve kalıcı hafıza anahtarlarını eksiksiz çıkarır", () => {
+    const tokens = extractTokens("Sipariş onaylandı: FU00314268/B-03, U00230931_A ve FTM30002337 ile FE026BF3736");
+    expect(tokens).toContain("00314268");
+    expect(tokens).toContain("00314268_B");
+    expect(tokens).toContain("00230931");
+    expect(tokens).toContain("00230931_A");
+    expect(tokens).toContain("30002337");
+    expect(tokens).toContain("E026BF3736");
+
+    expect(baseCodeKey("FU00314268/B-03")).toBe("00314268");
+    expect(baseCodeKey("U00314268_A")).toBe("00314268");
+    expect(baseCodeKey("FTM30002337")).toBe("30002337");
+    expect(baseCodeKey("FE026BF3736")).toBe("E026BF3736");
+    expect(normTr("Sipariş İptal / SİP Onayı")).toBe("SIPARIS IPTAL / SIP ONAYI");
+  });
+
+  it("kurumsal alan adı üzerinden EBA / satınalma göndericilerini de firmayla eşleştirir", () => {
+    const rule = "tugce.sahin@etimakine.com.tr";
+    expect(senderMatches("tugce.sahin@etimakine.com.tr", rule)).toBe(true);
+    expect(senderMatches("eba@etimakine.com.tr", rule)).toBe(true);
+    expect(senderMatches("siparis@etimakine.com.tr", rule)).toBe(true);
+    expect(senderMatches("baska@gmail.com", rule)).toBe(false);
+  });
+
+  it("SİP mail tablosunda Sipariş No yerine Malzeme sütununu codeCol olarak seçer ve bodyText saklar", async () => {
+    const html = `
+      <p>EBA Sipariş Bildirimi - SİP-2026-9981</p>
+      <table>
+        <tr><th>Sipariş No</th><th>Kalem</th><th>Malzeme</th><th>Malzeme Tanımı</th><th>Miktar</th></tr>
+        <tr><td>4500012345</td><td>10</td><td>FU00314268/B-03</td><td>TIA KAPAK</td><td>5</td></tr>
+      </table>
+    `;
+    const m = await parseEml(mkEml({ from: "EBA Sistem <eba@etimakine.com.tr>", subject: "SİP Sipariş Onayı 4500012345", html }));
+    expect(m.table?.codeCol).toBe(2);
+    expect(m.table?.rows[0][m.table!.codeCol]).toBe("FU00314268/B-03");
+    expect(m.bodyText).toContain("FU00314268/B-03");
   });
 });
 

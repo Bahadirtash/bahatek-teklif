@@ -26,11 +26,40 @@ export interface OfferInfo {
   path: string;
   at: string;
   result: Result;
+  /** Kullanıcı elle seçim yaptıysa true */
+  manual?: boolean;
+}
+
+export interface PriceHistoryEntry {
+  id: string;
+  requestId: string;
+  code: string;
+  normCode: string;
+  key: string;
+  baseKey: string;
+  description: string;
+  qty: number | null;
+  price: number;
+  date: string;
+  firm: string;
+  subject?: string;
+  result?: Result;
+  source?: "live" | "offer" | "archive" | "kalemler";
+}
+
+export interface OrdersStore {
+  /** EBA / SİP maillerinden ve eklerinden çıkarılan tüm onaylı parça kodları ve numaraları */
+  tokens: string[];
+  /** İptal / red maillerinden çıkarılan parça kodları */
+  canceledTokens?: string[];
+  /** Kalem bazında elle verilen sonuçlar: "requestId|code" -> "won" | "lost" */
+  itemResults?: Record<string, Result>;
 }
 
 /** requestId → (kalem anahtarı → kullanıcının yazdığı fiyat metni) */
 export type Prices = Record<string, Record<string, string>>;
 export type Offers = Record<string, OfferInfo>;
+export type HistoryMap = Record<string, PriceHistoryEntry>;
 
 export interface Session {
   emlPaths: string[];
@@ -40,6 +69,8 @@ export const state = {
   settings: null as unknown as Settings,
   prices: {} as Prices,
   offers: {} as Offers,
+  history: {} as HistoryMap,
+  orders: { tokens: [], canceledTokens: [], itemResults: {} } as OrdersStore,
   session: { emlPaths: [] } as Session,
   mails: new Map<string, ParsedMail>(),
   requests: [] as QuoteRequest[],
@@ -49,23 +80,33 @@ export const state = {
 
 export async function loadState(): Promise<void> {
   const s = await storeRead<Partial<Settings>>("settings");
+  const rawDays = s?.gmailDays ?? 60;
+  const rawOrderDays = s?.gmailOrderDays ?? 90;
   state.settings = {
     archiveRoot: s?.archiveRoot || (await defaultArchiveRoot()),
     firms: s?.firms ?? [],
     fullList: s?.fullList ?? {},
     gmailAccount: s?.gmailAccount ?? null,
-    gmailDays: s?.gmailDays ?? 3,
-    gmailOrderDays: s?.gmailOrderDays ?? 30,
+    // Önceki 2-3 günlük dar sınırı otomatik olarak en az 60 güne yükselt (hafıza kaybını önler)
+    gmailDays: rawDays <= 7 ? 60 : rawDays,
+    gmailOrderDays: rawOrderDays < 30 ? 90 : rawOrderDays,
     autostartInitialized: s?.autostartInitialized ?? false,
   };
   state.prices = (await storeRead<Prices>("prices")) ?? {};
   state.offers = (await storeRead<Offers>("offers")) ?? {};
+  state.history = (await storeRead<HistoryMap>("history")) ?? {};
+  const loadedOrders = await storeRead<OrdersStore>("orders");
+  state.orders = {
+    tokens: loadedOrders?.tokens ?? [],
+    canceledTokens: loadedOrders?.canceledTokens ?? [],
+    itemResults: loadedOrders?.itemResults ?? {},
+  };
   state.session = (await storeRead<Session>("session")) ?? { emlPaths: [] };
 }
 
 const timers: Record<string, number> = {};
-/** Sık değişen kayıtlar (fiyatlar) için kısa gecikmeli yazma. */
-export function persist(name: "settings" | "prices" | "offers" | "session", delay = 0): void {
+/** Sık değişen kayıtlar (fiyatlar, hafıza) için kısa gecikmeli yazma. */
+export function persist(name: "settings" | "prices" | "offers" | "session" | "history" | "orders", delay = 0): void {
   clearTimeout(timers[name]);
   const write = () => storeWrite(name, state[name]).catch((e) => console.error(`${name} kaydedilemedi`, e));
   if (delay) timers[name] = window.setTimeout(write, delay);
@@ -80,7 +121,17 @@ export function senderMatches(address: string, rule: string): boolean {
   const a = address.toLowerCase();
   const r = rule.trim().toLowerCase().replace(/^@/, "");
   if (!r) return false;
-  if (r.includes("@")) return a === r;
+  if (r.includes("@")) {
+    if (a === r) return true;
+    // Kurumsal e-posta kuralıysa (örn. tugce.sahin@etimakine.com.tr), aynı kurumsal alan adından
+    // gelen EBA / satınalma mailleri de (örn. eba@etimakine.com.tr) bu firmayla eşleşsin.
+    const rDomain = r.split("@")[1] ?? "";
+    const aDomain = a.split("@")[1] ?? "";
+    if (rDomain && !isPublicDomain(rDomain) && (aDomain === rDomain || aDomain.endsWith(`.${rDomain}`))) {
+      return true;
+    }
+    return false;
+  }
   const domain = a.split("@")[1] ?? "";
   return domain === r || domain.endsWith(`.${r}`);
 }

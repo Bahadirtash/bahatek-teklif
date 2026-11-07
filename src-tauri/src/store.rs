@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{ipc::Request, ipc::Response, AppHandle, Manager};
 
-const STORES: &[&str] = &["settings", "prices", "offers", "session"];
+const STORES: &[&str] = &["settings", "prices", "offers", "session", "history", "orders"];
 
 fn app_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -143,4 +143,89 @@ pub fn record_file(app: AppHandle, request: Request<'_>) -> Result<(), String> {
 #[tauri::command]
 pub fn log_frontend(level: String, message: String) {
     eprintln!("[arayüz:{level}] {message}");
+}
+
+/// Kayıtlı tüm geçmiş kalemleri (kayit/kalemler.json) okur.
+#[tauri::command]
+pub fn read_recorded_items(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let path = record_dir(&app)?.join("kalemler.json");
+    match fs::read_to_string(&path) {
+        Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// ---------- Kalıcı E-Posta Hafızası (hafiza/mailler/) ----------
+
+fn mail_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app_dir(app)?.join("hafiza").join("mailler");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn encode_mail_id(id: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.as_bytes())
+}
+
+fn decode_mail_id(stem: &str) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(stem.as_bytes()).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+#[tauri::command]
+pub fn mail_cache_list(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir = mail_cache_dir(&app)?;
+    let mut ids = Vec::new();
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("eml") {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    if let Some(id) = decode_mail_id(stem) {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+    }
+    Ok(ids)
+}
+
+#[tauri::command]
+pub fn mail_cache_read(app: AppHandle, id: String) -> Result<Response, String> {
+    let fname = format!("{}.eml", encode_mail_id(&id));
+    let path = mail_cache_dir(&app)?.join(fname);
+    fs::read(&path).map(Response::new).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn mail_cache_write(app: AppHandle, request: Request<'_>) -> Result<(), String> {
+    let id = request
+        .headers()
+        .get("x-mail-id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("geçersiz mail kimliği")?
+        .to_string();
+    let tauri::ipc::InvokeBody::Raw(data) = request.body() else {
+        return Err("ham veri bekleniyordu".into());
+    };
+    let fname = format!("{}.eml", encode_mail_id(&id));
+    let path = mail_cache_dir(&app)?.join(fname);
+    if path.exists() {
+        return Ok(());
+    }
+    write_atomic(&path, data)
+}
+
+#[tauri::command]
+pub fn mail_cache_delete(app: AppHandle, id: String) -> Result<(), String> {
+    let fname = format!("{}.eml", encode_mail_id(&id));
+    let path = mail_cache_dir(&app)?.join(fname);
+    if path.exists() {
+        let _ = fs::remove_file(&path);
+    }
+    Ok(())
 }

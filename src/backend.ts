@@ -2,7 +2,7 @@
 // çalışırken dosya sistemi gerektirmeyen yedek davranışlar kullanılır.
 import { invoke } from "@tauri-apps/api/core";
 
-export const inTauri = "__TAURI_INTERNALS__" in window;
+export const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export interface OfferRowPayload {
   cells: string[];
@@ -29,6 +29,17 @@ export interface LoadedFile {
   name: string;
   path: string | null;
   data: Uint8Array;
+}
+
+export interface ArchivedPriceItem {
+  code: string;
+  description: string;
+  qty: number | null;
+  price: number;
+  date: string;
+  firm: string;
+  folder: string;
+  path: string;
 }
 
 export async function storeRead<T>(name: string): Promise<T | null> {
@@ -118,6 +129,37 @@ export async function recordResult(requestId: string, result: string | null): Pr
 
 export async function recordFile(name: string, data: Uint8Array): Promise<void> {
   if (inTauri) await invoke("record_file", data, { headers: { "x-name": name } });
+}
+
+export async function readRecordedItems(): Promise<any[]> {
+  if (!inTauri) return [];
+  return invoke<any[]>("read_recorded_items").catch(() => []);
+}
+
+export async function scanArchiveOffers(archiveRoot: string): Promise<ArchivedPriceItem[]> {
+  if (!inTauri || !archiveRoot) return [];
+  return invoke<ArchivedPriceItem[]>("scan_archive_offers", { archiveRoot }).catch(() => []);
+}
+
+export async function mailCacheList(): Promise<string[]> {
+  if (!inTauri) return [];
+  return invoke<string[]>("mail_cache_list").catch(() => []);
+}
+
+export async function mailCacheRead(id: string): Promise<Uint8Array> {
+  return new Uint8Array(await invoke<ArrayBuffer>("mail_cache_read", { id }));
+}
+
+export async function mailCacheWrite(id: string, data: Uint8Array): Promise<void> {
+  if (inTauri) {
+    await invoke("mail_cache_write", data, { headers: { "x-mail-id": id } }).catch(() => {});
+  }
+}
+
+export async function mailCacheDelete(id: string): Promise<void> {
+  if (inTauri) {
+    await invoke("mail_cache_delete", { id }).catch(() => {});
+  }
 }
 
 export function logToTerminal(level: string, message: string): void {

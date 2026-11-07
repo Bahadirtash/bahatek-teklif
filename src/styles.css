@@ -135,4 +135,18 @@ tr.row:hover td.stk,tr.sel td.stk{background:var(--hl)}
 .pv-down{color:#2ecc71}
 .pv-up{color:#e74c3c}
 .pv-eq{color:var(--mu)}
+/* v2.3.0: Kalem (Satır) bazında Yeşil (SİP Onaylandı) / Kırmızı (Kalmadı) ve Sol Menü Filtreleri */
+tr.row.row-won td{background:rgba(46,204,113,.13) !important}
+tr.row.row-won:hover td,tr.row.row-won.sel td{background:rgba(46,204,113,.24) !important}
+tr.row.row-won td:first-child{border-left:4px solid #2ecc71 !important}
+tr.row.row-lost td{background:rgba(231,76,60,.11) !important}
+tr.row.row-lost:hover td,tr.row.row-lost.sel td{background:rgba(231,76,60,.22) !important}
+tr.row.row-lost td:first-child{border-left:4px solid #e74c3c !important}
+.sip-tag-won{display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;background:rgba(46,204,113,.22);color:#2ecc71;border:1px solid #2ecc71;vertical-align:middle}
+.sip-tag-lost{display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;background:rgba(231,76,60,.18);color:#e74c3c;border:1px solid #e74c3c;vertical-align:middle}
+.side-filters{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;padding:6px 8px;border-bottom:1px solid var(--bd);background:var(--bg);position:sticky;top:0;z-index:5}
+.side-fbtn{border:1px solid var(--bd);background:var(--pn);color:var(--mu);padding:3px 2px;border-radius:4px;font-size:10.5px;font-weight:600;cursor:pointer;text-align:center}
+.side-fbtn.active{background:var(--ac);color:#fff;border-color:var(--ac)}
+.lost-banner{background:rgba(231,76,60,.12);border:1px solid var(--er);color:var(--er);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+
 

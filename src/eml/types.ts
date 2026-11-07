@@ -47,6 +47,8 @@ export interface ParsedMail {
   partTotal: number | null;
   /** Gövdedeki son teklif tarihi, ör. "28.09.2026 15:00". */
   deadline: string | null;
+  /** EBA / SİP sipariş eşleştirmesi için tam metin içeriği (düz metin + HTML metni). */
+  bodyText?: string;
   table: ItemTable | null;
   warnings: string[];
   drawings: Drawing[];

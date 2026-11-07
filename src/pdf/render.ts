@@ -167,6 +167,25 @@ function isCleanMaterial(val?: string): boolean {
   return true;
 }
 
+/** EBA / SİP sipariş PDF'lerindeki tüm metin katmanını hızlıca okur. */
+export async function extractPdfRawText(d: Drawing): Promise<string> {
+  const ext = d.filename.toLowerCase().split(".").pop();
+  if (ext === "png" || ext === "jpg" || ext === "jpeg") return "";
+  try {
+    const doc = await loadDoc(d);
+    const pages: string[] = [];
+    const maxPages = Math.min(doc.numPages, 15);
+    for (let p = 1; p <= maxPages; p++) {
+      const page = await doc.getPage(p);
+      const content = await page.getTextContent();
+      pages.push(content.items.map((s: any) => s.str ?? "").join(" "));
+    }
+    return pages.join("\n");
+  } catch {
+    return "";
+  }
+}
+
 /** PDF içindeki antet kısmından Malzeme cinsi ve Ağırlığı okumaya çalışır. */
 export async function extractPdfInfo(d: Drawing): Promise<{ material?: string; weight?: string }> {
   try {

@@ -82,3 +82,25 @@ export async function fillExcelTemplate(req: QuoteRequest, templateData: Uint8Ar
   const buffer = await wb.xlsx.writeBuffer();
   return new Uint8Array(buffer);
 }
+
+/** EBA / SİP sipariş maillerindeki .xlsx eklerinin tüm hücre metinlerini çıkarır. */
+export async function extractExcelText(data: Uint8Array): Promise<string> {
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(data.slice().buffer as ArrayBuffer);
+    const out: string[] = [];
+    wb.eachSheet((ws) => {
+      ws.eachRow((row) => {
+        const vals: string[] = [];
+        row.eachCell((cell) => {
+          const v = cell.text || cell.value?.toString() || "";
+          if (v.trim()) vals.push(v.trim());
+        });
+        if (vals.length) out.push(vals.join(" "));
+      });
+    });
+    return out.join("\n");
+  } catch {
+    return "";
+  }
+}

@@ -80,11 +80,19 @@ export function tableFromHtml(html: string): ItemTable | null {
       : data[0].length === DEFAULT_HEADERS.length
         ? [...DEFAULT_HEADERS]
         : data[0].map((_, k) => `Sütun ${k + 1}`);
+  let finalCodeCol = best.codeCol;
+  const preferredCol = headers.findIndex((h) => {
+    const nh = normalizeHeader(h);
+    return (nh === "malzeme" || nh.includes("malzeme kod") || nh.includes("stok kod") || nh.includes("parça kod") || nh.includes("parca kod")) && !nh.includes("tanım") && !nh.includes("tanim");
+  });
+  if (preferredCol >= 0 && data.every((r) => isItemCode(r[preferredCol] ?? ""))) {
+    finalCodeCol = preferredCol;
+  }
   return {
     headers,
     rows: data,
-    codeCol: best.codeCol,
-    qtyCol: findQtyCol(headers, data, best.codeCol),
+    codeCol: finalCodeCol,
+    qtyCol: findQtyCol(headers, data, finalCodeCol),
     source: "html",
   };
 }

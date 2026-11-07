@@ -125,7 +125,9 @@ export async function parseEml(raw: ArrayBuffer | Uint8Array | string, id?: stri
   const tag = REQUEST_TAG_RE.exec(subject);
   const partNo = tag ? PART_NO_RE.exec(subject) : null;
   const partTotal = PART_TOTAL_RE.exec(text) ?? PART_TOTAL_RE.exec(html);
-  const deadline = DEADLINE_RE.exec(text.replace(/\s+/g, " "));
+  const htmlStripped = html ? html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim() : "";
+  const bodyText = [text, htmlStripped].filter(Boolean).join("\n");
+  const deadline = DEADLINE_RE.exec(bodyText.replace(/\s+/g, " "));
 
   return {
     id: mailId,
@@ -137,6 +139,7 @@ export async function parseEml(raw: ArrayBuffer | Uint8Array | string, id?: stri
     partNo: partNo ? Number(partNo[1]) : null,
     partTotal: partTotal ? Number(partTotal[1]) : null,
     deadline: deadline ? [deadline[1], deadline[2]?.replace(".", ":")].filter(Boolean).join(" ") : null,
+    bodyText,
     table,
     warnings,
     drawings,

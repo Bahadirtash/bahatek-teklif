@@ -1,8 +1,9 @@
 // "Teklifi Hazırla": doldurulmuş teklif.xlsx üretir ve firma klasörüne kaydeder.
 // Kurallar: kod ve tanımlar harfi harfine (metin olarak) yazılır, sütun sırası/başlıkları
 // B firmasınınkiyle aynı, sonuna Birim Fiyat + Toplam eklenir, kalem sırası korunur.
+use calamine::{open_workbook, Data, Reader, Xlsx};
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Formula, Workbook, XlsxError};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
@@ -173,10 +174,188 @@ pub fn save_excel_file(archive_root: String, firm: String, folder: String, data:
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedPriceItem {
+    pub code: String,
+    pub description: String,
+    pub qty: Option<f64>,
+    pub price: f64,
+    pub date: String,
+    pub firm: String,
+    pub folder: String,
+    pub path: String,
+}
+
+fn collect_xlsx_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > 4 || !dir.exists() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_xlsx_files(&p, depth + 1, out);
+        } else if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+            let lower = name.to_lowercase();
+            if lower.ends_with(".xlsx") && !lower.starts_with("~$") && !lower.ends_with(".tmp") {
+                out.push(p);
+            }
+        }
+    }
+}
+
+fn parse_cell_f64(d: &Data) -> Option<f64> {
+    match d {
+        Data::Float(v) => Some(*v),
+        Data::Int(v) => Some(*v as f64),
+        Data::String(s) => {
+            let clean = s.trim().replace("₺", "").replace("TL", "").replace(' ', "");
+            if clean.is_empty() {
+                return None;
+            }
+            let norm = if clean.contains(',') {
+                clean.replace('.', "").replace(',', ".")
+            } else {
+                clean
+            };
+            norm.parse::<f64>().ok()
+        }
+        _ => None,
+    }
+}
+
+fn extract_iso_date_from_text(s: &str) -> Option<String> {
+    // "26.09.2026" biçimini arar
+    let bytes = s.as_bytes();
+    if bytes.len() >= 10 {
+        for i in 0..=(bytes.len() - 10) {
+            if bytes[i].is_ascii_digit()
+                && bytes[i + 1].is_ascii_digit()
+                && bytes[i + 2] == b'.'
+                && bytes[i + 3].is_ascii_digit()
+                && bytes[i + 4].is_ascii_digit()
+                && bytes[i + 5] == b'.'
+                && bytes[i + 6].is_ascii_digit()
+                && bytes[i + 7].is_ascii_digit()
+                && bytes[i + 8].is_ascii_digit()
+                && bytes[i + 9].is_ascii_digit()
+            {
+                let dd = &s[i..i + 2];
+                let mm = &s[i + 3..i + 5];
+                let yyyy = &s[i + 6..i + 10];
+                return Some(format!("{yyyy}-{mm}-{dd}T12:00:00.000Z"));
+            }
+        }
+    }
+    None
+}
+
+/// Teklif Arşivi klasöründeki tüm .xlsx dosyalarını tarayıp verilmiş fiyatları hafızaya aktarır.
+#[tauri::command]
+pub fn scan_archive_offers(archive_root: String) -> Result<Vec<ArchivedPriceItem>, String> {
+    let root = Path::new(&archive_root);
+    let mut files = Vec::new();
+    collect_xlsx_files(root, 0, &mut files);
+    let mut results = Vec::new();
+
+    for path in files {
+        let Ok(mut wb) = open_workbook::<Xlsx<_>, _>(&path) else { continue };
+        let sheet_names = wb.sheet_names().to_vec();
+        let Some(sheet_name) = sheet_names.iter().find(|n| n.eq_ignore_ascii_case("Teklif")).or_else(|| sheet_names.first()) else {
+            continue;
+        };
+        let Ok(range) = wb.worksheet_range(sheet_name) else { continue };
+
+        let folder = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let firm = path
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let date = extract_iso_date_from_text(&folder)
+            .or_else(|| extract_iso_date_from_text(fname))
+            .unwrap_or_else(|| "2026-01-01T12:00:00.000Z".to_string());
+
+        let mut header_row: Option<usize> = None;
+        let mut code_col: usize = 0;
+        let mut desc_col: Option<usize> = None;
+        let mut qty_col: Option<usize> = None;
+        let mut price_col: Option<usize> = None;
+
+        for (r_idx, row) in range.rows().enumerate().take(15) {
+            let mut f_code = None;
+            let mut f_desc = None;
+            let mut f_qty = None;
+            let mut f_price = None;
+            for (c_idx, cell) in row.iter().enumerate() {
+                let s = cell.to_string().to_lowercase().replace(' ', "");
+                if s.contains("malzemekod") || s == "malzeme" || s.contains("parçakod") || s.contains("stokkodu") || s == "kod" {
+                    if f_code.is_none() {
+                        f_code = Some(c_idx);
+                    }
+                } else if s.contains("tanım") || s.contains("tanim") || s.contains("açıklama") || s.contains("aciklama") || s.contains("malzemeadi") {
+                    f_desc = Some(c_idx);
+                } else if s.contains("miktar") || s.contains("adet") {
+                    f_qty = Some(c_idx);
+                } else if s.contains("birimfiyat") || s == "fiyat" || s.contains("tekliffiyat") {
+                    f_price = Some(c_idx);
+                }
+            }
+            if f_price.is_some() && (f_code.is_some() || row.len() >= 3) {
+                header_row = Some(r_idx);
+                code_col = f_code.unwrap_or(0);
+                desc_col = f_desc.or(Some(code_col + 1));
+                qty_col = f_qty;
+                price_col = f_price;
+                break;
+            }
+        }
+
+        let (Some(h_row), Some(p_col)) = (header_row, price_col) else { continue };
+        for row in range.rows().skip(h_row + 1) {
+            let Some(code_cell) = row.get(code_col) else { continue };
+            let code = code_cell.to_string().trim().to_string();
+            if code.len() < 3 {
+                continue;
+            }
+            let Some(price_cell) = row.get(p_col) else { continue };
+            let Some(price) = parse_cell_f64(price_cell) else { continue };
+            if price <= 0.0 {
+                continue;
+            }
+            let description = desc_col
+                .and_then(|c| row.get(c))
+                .map(|d| d.to_string().trim().to_string())
+                .unwrap_or_default();
+            let qty = qty_col.and_then(|c| row.get(c)).and_then(parse_cell_f64);
+            results.push(ArchivedPriceItem {
+                code,
+                description,
+                qty,
+                price,
+                date: date.clone(),
+                firm: firm.clone(),
+                folder: folder.clone(),
+                path: path.to_string_lossy().into_owned(),
+            });
+        }
+    }
+
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calamine::{open_workbook, Data, Reader, Xlsx};
 
     fn sample() -> Offer {
         let row = |code: &str, desc: &str, q: &str, price: Option<f64>| OfferRow {
