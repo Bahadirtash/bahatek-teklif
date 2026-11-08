@@ -141,25 +141,9 @@ export async function scanArchiveOffers(archiveRoot: string): Promise<ArchivedPr
   return invoke<ArchivedPriceItem[]>("scan_archive_offers", { archiveRoot }).catch(() => []);
 }
 
-export async function mailCacheList(): Promise<string[]> {
-  if (!inTauri) return [];
-  return invoke<string[]>("mail_cache_list").catch(() => []);
-}
-
-export async function mailCacheRead(id: string): Promise<Uint8Array> {
-  return new Uint8Array(await invoke<ArrayBuffer>("mail_cache_read", { id }));
-}
-
-export async function mailCacheWrite(id: string, data: Uint8Array): Promise<void> {
-  if (inTauri) {
-    await invoke("mail_cache_write", data, { headers: { "x-mail-id": id } }).catch(() => {});
-  }
-}
-
-export async function mailCacheDelete(id: string): Promise<void> {
-  if (inTauri) {
-    await invoke("mail_cache_delete", { id }).catch(() => {});
-  }
+/** v2.3.0'ın diske yazdığı ham e-posta önbelleğini (hafiza/mailler/) siler. */
+export async function mailCacheClear(): Promise<void> {
+  if (inTauri) await invoke("mail_cache_clear").catch((e) => console.warn("e-posta önbelleği silinemedi", e));
 }
 
 export function logToTerminal(level: string, message: string): void {

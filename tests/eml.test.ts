@@ -79,12 +79,17 @@ describe("kod ve çizim anahtarı", () => {
     expect(normTr("Sipariş İptal / SİP Onayı")).toBe("SIPARIS IPTAL / SIP ONAYI");
   });
 
-  it("kurumsal alan adı üzerinden EBA / satınalma göndericilerini de firmayla eşleştirir", () => {
+  it("gönderici eşleşmesi kesindir: tam adres kuralı alan adına genişlemez", () => {
     const rule = "tugce.sahin@etimakine.com.tr";
     expect(senderMatches("tugce.sahin@etimakine.com.tr", rule)).toBe(true);
-    expect(senderMatches("eba@etimakine.com.tr", rule)).toBe(true);
-    expect(senderMatches("siparis@etimakine.com.tr", rule)).toBe(true);
+    expect(senderMatches("TUGCE.SAHIN@etimakine.com.tr", rule)).toBe(true);
+    expect(senderMatches("eba@etimakine.com.tr", rule)).toBe(false);
+    expect(senderMatches("baska@etimakine.com.tr", rule)).toBe(false);
     expect(senderMatches("baska@gmail.com", rule)).toBe(false);
+    // Alan adı kuralı: o alan adı ve alt alan adları
+    expect(senderMatches("eba@etimakine.com.tr", "etimakine.com.tr")).toBe(true);
+    expect(senderMatches("x@mail.etimakine.com.tr", "@etimakine.com.tr")).toBe(true);
+    expect(senderMatches("x@notetimakine.com.tr", "etimakine.com.tr")).toBe(false);
   });
 
   it("SİP mail tablosunda Sipariş No yerine Malzeme sütununu codeCol olarak seçer ve bodyText saklar", async () => {

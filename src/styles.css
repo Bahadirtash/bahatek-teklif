@@ -150,3 +150,6 @@ tr.row.row-lost td:first-child{border-left:4px solid #e74c3c !important}
 .lost-banner{background:rgba(231,76,60,.12);border:1px solid var(--er);color:var(--er);padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
 
 
+.sip-tag-wait{display:inline-block;margin-left:5px;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:700;background:rgba(241,196,15,.15);color:#d4ac0d;border:1px solid #d4ac0d;vertical-align:middle;cursor:pointer}
+.sip-tag-none{display:inline-block;margin-left:5px;padding:0 4px;border-radius:3px;font-size:10px;color:var(--mu);border:1px dashed var(--bd);vertical-align:middle;cursor:pointer;opacity:.6}
+.sip-tag-won,.sip-tag-lost{cursor:pointer}

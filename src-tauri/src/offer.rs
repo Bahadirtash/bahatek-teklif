@@ -252,9 +252,16 @@ fn extract_iso_date_from_text(s: &str) -> Option<String> {
 }
 
 /// Teklif Arşivi klasöründeki tüm .xlsx dosyalarını tarayıp verilmiş fiyatları hafızaya aktarır.
+/// Arka plan iş parçacığında çalışır; büyük arşivlerde arayüzü dondurmaz.
 #[tauri::command]
-pub fn scan_archive_offers(archive_root: String) -> Result<Vec<ArchivedPriceItem>, String> {
-    let root = Path::new(&archive_root);
+pub async fn scan_archive_offers(archive_root: String) -> Result<Vec<ArchivedPriceItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_archive_offers_blocking(&archive_root))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn scan_archive_offers_blocking(archive_root: &str) -> Result<Vec<ArchivedPriceItem>, String> {
+    let root = Path::new(archive_root);
     let mut files = Vec::new();
     collect_xlsx_files(root, 0, &mut files);
     let mut results = Vec::new();
