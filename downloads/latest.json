@@ -1,0 +1,15 @@
+{
+  "version": "2.3.1",
+  "notes": "Bahatek Teklif v2.3.1 — Sadeleştirilmiş arayüz ve Türkçe iletilmiş e-posta tarih ayrıştırıcı",
+  "pub_date": "2026-11-08T09:54:27.542Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRHpmZ2dpdUV3eEhWSm1XSWE3eW5kNjRGeXB2NGNsWmYvQTArZFlGWi9Lb1lWWlZielVhbXRZVUxNdXNsQWxtTENVbGRTOXhPc05NcVc2RTlXdjJHWXkyMVJnbW9OY1FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0MTMxNjY0CWZpbGU6QmFoYXRlayBUZWtsaWZfMi4zLjFfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjIuMy4xCk94K21uK1hsSmthUDZGSGh3Z0o2eEtmbzhLNUtmRFZ2VmpoY25jaklmYy9yYkJHL0NFTWhUUWg1MCtHVkd1S0MvcldQWHhiQ2FtN0RUUllvR0tZeEF3PT0K",
+      "url": "https://raw.githubusercontent.com/Bahadirtash/bahatek-teklif/main/downloads/Bahatek.Teklif_2.3.1_x64-setup.exe"
+    },
+    "windows-x86_64-nsis": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRRHpmZ2dpdUV3eEhWSm1XSWE3eW5kNjRGeXB2NGNsWmYvQTArZFlGWi9Lb1lWWlZielVhbXRZVUxNdXNsQWxtTENVbGRTOXhPc05NcVc2RTlXdjJHWXkyMVJnbW9OY1FZPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0MTMxNjY0CWZpbGU6QmFoYXRlayBUZWtsaWZfMi4zLjFfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjIuMy4xCk94K21uK1hsSmthUDZGSGh3Z0o2eEtmbzhLNUtmRFZ2VmpoY25jaklmYy9yYkJHL0NFTWhUUWg1MCtHVkd1S0MvcldQWHhiQ2FtN0RUUllvR0tZeEF3PT0K",
+      "url": "https://raw.githubusercontent.com/Bahadirtash/bahatek-teklif/main/downloads/Bahatek.Teklif_2.3.1_x64-setup.exe"
+    }
+  }
+}
