@@ -4,6 +4,7 @@ import { groupMails, parseEml } from "./eml";
 import { baseCodeKey, codeKey, normTr, normalizeCodeStr } from "./eml/codes";
 import type { Drawing, Item, ParsedMail, QuoteRequest } from "./eml";
 import { cleanSubject, dayOf, esc, formatMoney, gmailComposeUrl, parsePrice, todayDotted } from "./format";
+import { parseTurkishDateMs } from "./dates";
 import { renderCrop, renderFullPage, extractPdfInfo } from "./pdf/render";
 import {
   allFirmRules, firmKey, firmOf, itemKey, loadState, mailFromAllowedFirm, mailFromAllowedOrderSender, newId, persist,
@@ -98,6 +99,8 @@ function parseMailDateMs(dateStr?: string | null, tag?: string | null): number {
       );
       if (!isNaN(d.getTime())) return d.getTime();
     }
+    const tr = parseTurkishDateMs(dateStr);
+    if (tr) return tr;
     const parsed = Date.parse(dateStr);
     if (!isNaN(parsed)) return parsed;
   }
@@ -524,7 +527,7 @@ function offerExcelFilename(req: QuoteRequest): string {
     }
   } else if (req.date) {
     try {
-      const d = new Date(req.date);
+      const d = new Date(parseMailDateMs(req.date, null) || NaN);
       if (!isNaN(d.getTime())) {
         const day = String(d.getDate()).padStart(2, "0");
         const month = String(d.getMonth() + 1).padStart(2, "0");
